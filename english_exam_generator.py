@@ -1,8 +1,10 @@
-"""Word Twist - 고등 영어 어휘/어법 문맥 문제 출제기 (DeepSeek 추가)"""
+"""Word Twist - 지문·문제 누적 저장소 (DeepSeek 포함)"""
 import streamlit as st
 import json
 import os
 import re
+import uuid
+import datetime
 import concurrent.futures
 
 import google.generativeai as genai
@@ -21,8 +23,14 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
+# ---------- 파일 경로 ----------
 SAVE_FILE = "saved_questions.json"
+PASSAGE_FILE = "passages.json"
+
+# ---------- 구글 드라이브 스코프 ----------
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+
+# ---------- 출제 설정 상수 ----------
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
 
@@ -31,7 +39,52 @@ OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat"]
 
+# ==================== 지문 관리 ====================
+def load_passages():
+    if not os.path.exists(PASSAGE_FILE):
+        return []
+    try:
+        with open(PASSAGE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
 
+def save_passages(passages):
+    with open(PASSAGE_FILE, "w", encoding="utf-8") as f:
+        json.dump(passages, f, ensure_ascii=False, indent=4)
+
+def add_passage(title, text):
+    passages = load_passages()
+    # 중복 제목 방지 (선택적)
+    for p in passages:
+        if p["title"] == title:
+            p["text"] = text
+            p["updated_at"] = str(datetime.datetime.now())
+            save_passages(passages)
+            return p["id"]
+    new_id = str(uuid.uuid4())
+    passages.append({
+        "id": new_id,
+        "title": title,
+        "text": text,
+        "created_at": str(datetime.datetime.now()),
+        "updated_at": str(datetime.datetime.now())
+    })
+    save_passages(passages)
+    return new_id
+
+def delete_passage(passage_id):
+    passages = load_passages()
+    passages = [p for p in passages if p["id"] != passage_id]
+    save_passages(passages)
+
+def get_passage_by_id(passage_id):
+    for p in load_passages():
+        if p["id"] == passage_id:
+            return p
+    return None
+
+# ==================== 문제 저장/로드 ====================
 def load_all_questions():
     if not os.path.exists(SAVE_FILE):
         return []
@@ -41,26 +94,21 @@ def load_all_questions():
     except Exception:
         return []
 
-
 def save_question(data):
     fd = load_all_questions()
     fd.append(data)
     with open(SAVE_FILE, "w", encoding="utf-8") as f:
         json.dump(fd, f, ensure_ascii=False, indent=4)
 
-
 def questions_for_text(text):
     t = text.strip()
     return [i for i in load_all_questions() if i.get("original_text", "").strip() == t]
 
-
 def previous_targets(text):
     return [i.get("original_word", "") for i in questions_for_text(text) if i.get("original_word")]
 
-
 def previous_pos(text):
     return [i.get("answer_pos", "") for i in questions_for_text(text) if i.get("answer_pos")]
-
 
 def previous_choice_words(text):
     words = set()
@@ -71,7 +119,6 @@ def previous_choice_words(text):
             if w:
                 words.add(w)
     return sorted(words)
-
 
 def pick_focus_pos(text):
     history = previous_pos(text)
@@ -85,7 +132,7 @@ def pick_focus_pos(text):
             return p
     return cands[0]
 
-
+# ==================== LLM 호출 ====================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
         genai.configure(api_key=api_keys.get("gemini", ""))
@@ -110,7 +157,7 @@ def call_llm(provider, model, prompt, api_keys):
         return r.choices[0].message.content
     raise ValueError("unknown provider: " + str(provider))
 
-
+# ==================== 프롬프트 빌더 ====================
 def build_prompt(text, prev_targets, focus_pos=None, prev_choices=None):
     avoid_part = ""
     if prev_targets:
@@ -168,7 +215,6 @@ __TEXT__
             .replace("__AVOID__", avoid_part)
             .replace("__TEXT__", text))
 
-
 def build_grammar_prompt(text, prev_targets, prev_choices=None):
     avoid_part = ""
     if prev_targets:
@@ -216,7 +262,6 @@ __TEXT__
 """
     return template.replace("__AVOID__", avoid_part).replace("__TEXT__", text)
 
-
 def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None):
     if q_type == "grammar":
         prompt = build_grammar_prompt(text, prev_targets, prev_choices)
@@ -230,7 +275,7 @@ def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q
         cleaned = cleaned[s:e + 1]
     return json.loads(cleaned)
 
-
+# ==================== 구글 드라이브 연동 ====================
 def get_drive_service():
     creds = None
     if os.path.exists('token.json'):
@@ -249,7 +294,6 @@ def get_drive_service():
             token.write(creds.to_json())
     return build('drive', 'v3', credentials=creds)
 
-
 def upload_to_drive(path):
     s = get_drive_service()
     if not s:
@@ -258,7 +302,7 @@ def upload_to_drive(path):
     f = s.files().create(body={'name': os.path.basename(path)}, media_body=media, fields='id').execute()
     return f.get('id')
 
-
+# ==================== Streamlit UI ====================
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
@@ -296,6 +340,15 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
+# ---------- 세션 상태 초기화 ----------
+if "current_text" not in st.session_state:
+    st.session_state.current_text = ""
+if "last_results" not in st.session_state:
+    st.session_state.last_results = []
+if "selected_passage_id" not in st.session_state:
+    st.session_state.selected_passage_id = None
+
+# ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
     provider = st.radio("Provider", ["gemini", "openai", "anthropic", "deepseek"],
@@ -332,21 +385,75 @@ with st.sidebar:
     batch_n = st.number_input("한 번에 만들 문제 수", 1, 10, 1)
     parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True)
 
+    st.markdown("---")
+    st.markdown("### 📚 지문 보관함")
+
+    # 지문 목록 가져오기
+    passages = load_passages()
+    passage_options = ["(직접 입력)"] + [f"{p['title']}  [{p['updated_at'][:10]}]" for p in passages]
+    # 선택된 지문 찾기
+    selected_label = "(직접 입력)"
+    if st.session_state.selected_passage_id:
+        sel = get_passage_by_id(st.session_state.selected_passage_id)
+        if sel:
+            selected_label = f"{sel['title']}  [{sel['updated_at'][:10]}]"
+
+    new_label = st.selectbox("저장된 지문 불러오기", passage_options, index=0,
+                             help="선택하면 해당 지문이 자동으로 입력됩니다.")
+    if new_label != selected_label:
+        if new_label == "(직접 입력)":
+            st.session_state.selected_passage_id = None
+            st.session_state.current_text = ""
+            st.session_state.last_results = []
+        else:
+            # 제목 부분만 추출
+            title_part = new_label.split("  [")[0]
+            for p in passages:
+                if p["title"] == title_part:
+                    st.session_state.selected_passage_id = p["id"]
+                    st.session_state.current_text = p["text"]
+                    st.session_state.last_results = []
+                    break
+
+    # 새 지문 저장
+    new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
+    if st.button("💾 현재 지문 저장"):
+        if not new_title.strip():
+            st.warning("제목을 입력해주세요.")
+        elif not st.session_state.current_text.strip():
+            st.warning("저장할 지문이 없습니다.")
+        else:
+            pid = add_passage(new_title.strip(), st.session_state.current_text)
+            st.session_state.selected_passage_id = pid
+            st.success(f"'{new_title}' 지문이 저장되었습니다.")
+
+    if st.session_state.selected_passage_id:
+        if st.button("🗑️ 선택 지문 삭제"):
+            delete_passage(st.session_state.selected_passage_id)
+            st.session_state.selected_passage_id = None
+            st.session_state.current_text = ""
+            st.session_state.last_results = []
+            st.success("지문이 삭제되었습니다.")
+            st.rerun()
+
+# ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
 
-if "current_text" not in st.session_state:
-    st.session_state.current_text = ""
-if "last_results" not in st.session_state:
-    st.session_state.last_results = []
-
 user_input = st.text_area("영어 지문", height=220, value=st.session_state.current_text,
-    placeholder="여기에 영어 지문을 붙여 넣으세요...")
+    placeholder="여기에 영어 지문을 붙여 넣으세요...",
+    key="text_area")
 
+# 텍스트 변경 감지
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
+    # 선택된 지문이 있으면 텍스트 수동 변경으로 인해 연결 해제
+    if st.session_state.selected_passage_id:
+        st.session_state.selected_passage_id = None
+        # selectbox도 초기화해야 하지만 widget state 변경은 힘드니 패스
 
+# 현재 지문 메트릭 표시
 if user_input.strip():
     existing = questions_for_text(user_input)
     used_targets = [q.get("original_word", "?") for q in existing]
@@ -380,7 +487,7 @@ with c1:
 with c2:
     btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에")
 
-
+# ---------- 문제 생성 로직 ----------
 def make_one(text):
     prev_t = previous_targets(text)
     prev_c = previous_choice_words(text)
@@ -415,11 +522,13 @@ def make_one(text):
         result["_provider"] = provider
         result["_model"] = model
         result["_q_type"] = q_type
+        # 지문 연결 id 추가 (현재 불러온 지문이 있으면)
+        if st.session_state.selected_passage_id:
+            result["passage_id"] = st.session_state.selected_passage_id
         save_question(result)
         st.session_state.last_results.append(result)
         return result
     raise RuntimeError("생성 실패: " + str(last_err))
-
 
 def render_loading(placeholder, current, total, provider_name, mode_label=""):
     sub = provider_name.upper() + " · " + str(current) + " / " + str(total)
@@ -435,12 +544,10 @@ def render_loading(placeholder, current, total, provider_name, mode_label=""):
     )
     placeholder.markdown(overlay_html, unsafe_allow_html=True)
 
-
 def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
                           q_type_snapshot, prev_choices_snapshot):
     return generate_one_raw(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
                              q_type=q_type_snapshot, prev_choices=prev_choices_snapshot)
-
 
 if btn_one or btn_batch:
     if not user_input.strip():
@@ -499,6 +606,8 @@ if btn_one or btn_batch:
                 r["_provider"] = provider
                 r["_model"] = model
                 r["_q_type"] = q_type
+                if st.session_state.selected_passage_id:
+                    r["passage_id"] = st.session_state.selected_passage_id
                 save_question(r)
                 st.session_state.last_results.append(r)
                 ok += 1
@@ -519,7 +628,7 @@ if btn_one or btn_batch:
                 for e in errors:
                     st.write("- " + e)
 
-
+# ---------- 결과 표시 ----------
 def render_question_card(idx, r):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
@@ -539,7 +648,6 @@ def render_question_card(idx, r):
         st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
         st.markdown("**카테고리:** " + pos)
         st.markdown("**해설:** " + str(r.get("explanation", "")))
-
 
 if st.session_state.last_results:
     st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
@@ -561,19 +669,25 @@ if user_input.strip():
                 st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
                 st.caption(q.get("explanation", ""))
 
+# ---------- 드라이브 백업 ----------
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
     drv = st.button("☁️ 드라이브 백업")
 with cdrv2:
-    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 및 passages.json을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
 if drv:
-    if os.path.exists(SAVE_FILE):
-        try:
-            fid = upload_to_drive(SAVE_FILE)
-            if fid:
-                st.success("업로드 성공 (ID: " + fid + ")")
-        except Exception as e:
-            st.error("업로드 실패: " + str(e))
-    else:
-        st.warning("저장된 문제가 없습니다.")
+    success = True
+    for fname in [SAVE_FILE, PASSAGE_FILE]:
+        if os.path.exists(fname):
+            try:
+                fid = upload_to_drive(fname)
+                if fid:
+                    st.success(f"{fname} 업로드 완료 (ID: {fid})")
+                else:
+                    success = False
+            except Exception as e:
+                st.error(f"{fname} 업로드 실패: {e}")
+                success = False
+    if not os.path.exists(SAVE_FILE) and not os.path.exists(PASSAGE_FILE):
+        st.warning("저장된 파일이 없습니다.")
