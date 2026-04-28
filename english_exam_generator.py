@@ -1,4 +1,4 @@
-"""Word Twist - 고등 영어 어휘/어법 문맥 문제 출제기"""
+"""Word Twist - 고등 영어 어휘/어법 문맥 문제 출제기 (DeepSeek 추가)"""
 import streamlit as st
 import json
 import os
@@ -29,6 +29,7 @@ POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conj
 GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+DEEPSEEK_MODELS = ["deepseek-chat"]
 
 
 def load_all_questions():
@@ -101,6 +102,12 @@ def call_llm(provider, model, prompt, api_keys):
         c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
         r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
         return r.content[0].text
+    if provider == "deepseek":
+        if OpenAI is None:
+            raise RuntimeError("pip install openai 필요")
+        c = OpenAI(api_key=api_keys.get("deepseek", ""), base_url="https://api.deepseek.com")
+        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
+        return r.choices[0].message.content
     raise ValueError("unknown provider: " + str(provider))
 
 
@@ -291,8 +298,8 @@ st.markdown(CSS, unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    provider = st.radio("Provider", ["gemini", "openai", "anthropic"],
-        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude"}[x], horizontal=True)
+    provider = st.radio("Provider", ["gemini", "openai", "anthropic", "deepseek"],
+        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek"}[x], horizontal=True)
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
         gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
@@ -301,6 +308,10 @@ with st.sidebar:
         model = st.selectbox("모델", OPENAI_MODELS, index=0)
         openai_key = st.text_input("OpenAI API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
         st.session_state["openai_api_key"] = openai_key
+    elif provider == "deepseek":
+        model = st.selectbox("모델", DEEPSEEK_MODELS, index=0)
+        deepseek_key = st.text_input("DeepSeek API Key", type="password", value=os.environ.get("DEEPSEEK_API_KEY", ""))
+        st.session_state["deepseek_api_key"] = deepseek_key
     else:
         model = st.selectbox("모델", CLAUDE_MODELS, index=0)
         anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
@@ -383,6 +394,7 @@ def make_one(text):
         "gemini": st.session_state.get("gemini_api_key", ""),
         "openai": st.session_state.get("openai_api_key", ""),
         "anthropic": st.session_state.get("anthropic_api_key", ""),
+        "deepseek": st.session_state.get("deepseek_api_key", ""),
     }
     last_err = None
     for attempt in range(4):
@@ -443,6 +455,7 @@ if btn_one or btn_batch:
             "gemini": st.session_state.get("gemini_api_key", ""),
             "openai": st.session_state.get("openai_api_key", ""),
             "anthropic": st.session_state.get("anthropic_api_key", ""),
+            "deepseek": st.session_state.get("deepseek_api_key", ""),
         }
 
         if n > 1 and parallel_mode:
