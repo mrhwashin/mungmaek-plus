@@ -1,6 +1,5 @@
 """
 Word Twist - 고등 영어 어휘 문맥 문제 출제기
-Gemini / GPT / Claude 통합, 구글 문서(Google Docs) 연동 및 8품사 지원
 """
 import streamlit as st
 import json
@@ -27,19 +26,8 @@ from googleapiclient.http import MediaFileUpload
 
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SAVE_FILE = "saved_questions.json"
-
-# 8품사 전체로 확장
-POS_ROTATION = ["noun", "pronoun", "verb", "adjective", "adverb", "preposition", "conjunction", "interjection"]
-POS_KOR = {
-    "noun": "명사",
-    "pronoun": "대명사",
-    "verb": "동사",
-    "adjective": "형용사",
-    "adverb": "부사",
-    "preposition": "전치사",
-    "conjunction": "접속사",
-    "interjection": "감탄사"
-}
+POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
+POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
 
 GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
@@ -90,54 +78,37 @@ def pick_focus_pos(text):
 
 
 def call_llm(provider, model, prompt, api_keys):
-    timeout_sec = 30
     if provider == "gemini":
-        api_key = api_keys.get("gemini", "").strip()
-        if not api_key:
-            raise ValueError("Gemini API 키가 입력되지 않았습니다.")
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel(model).generate_content(
-            prompt, 
-            request_options={"timeout": timeout_sec}
-        ).text
+        genai.configure(api_key=api_keys.get("gemini", ""))
+        return genai.GenerativeModel(model).generate_content(prompt).text
     if provider == "openai":
         if OpenAI is None:
             raise RuntimeError("pip install openai 필요")
-        api_key = api_keys.get("openai", "").strip()
-        if not api_key:
-            raise ValueError("OpenAI API 키가 입력되지 않았습니다.")
-        c = OpenAI(api_key=api_key)
-        r = c.chat.completions.create(
-            model=model, 
-            messages=[{"role": "user", "content": prompt}], 
-            temperature=0.9,
-            timeout=timeout_sec
-        )
+        c = OpenAI(api_key=api_keys.get("openai", ""))
+        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
         return r.choices[0].message.content
     if provider == "anthropic":
         if anthropic is None:
             raise RuntimeError("pip install anthropic 필요")
-        api_key = api_keys.get("anthropic", "").strip()
-        if not api_key:
-            raise ValueError("Anthropic API 키가 입력되지 않았습니다.")
-        c = anthropic.Anthropic(api_key=api_key)
-        r = c.messages.create(
-            model=model, 
-            max_tokens=4096, 
-            messages=[{"role": "user", "content": prompt}],
-            timeout=timeout_sec
-        )
+        c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
+        r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
         return r.content[0].text
     raise ValueError("unknown provider: " + str(provider))
 
 
-def build_prompt(text, prev_targets, focus_pos):
+def build_prompt(text, prev_targets, focus_pos=None):
     avoid_part = ""
     if prev_targets:
         avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. 이번 정답 타겟으로 절대 다시 쓰지 마라: " + ", ".join(prev_targets)
-    pos_kor = POS_KOR[focus_pos]
-    
-    # 8품사 전체 활용을 위한 프롬프트 수정
+
+    if focus_pos:
+        pos_kor = POS_KOR[focus_pos]
+        pos_rule = "5. 이번 문제의 정답 타겟 품사는 반드시 " + pos_kor + " (" + focus_pos + ") 다. 위 5개 보기 중 " + focus_pos + " 1개를 골라 변형해라."
+        pos_field = focus_pos
+    else:
+        pos_rule = "5. 5개 보기 중 정답(변형할 단어) 1개는 동사/형용사/부사/접속사 중 어느 품사든 OK. 지문 전체 흐름에서 가장 함정성이 높고 문맥상 변별력이 큰 단어 1개를 자유롭게 골라라. 한 품사에 치우치지 말고 매번 다른 품사를 선택해도 좋다."
+        pos_field = "verb 또는 adjective 또는 adverb 또는 conjunction 중 실제 변형한 품사"
+
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어휘 문제 전문가다.
 다음 영어 지문으로 '문맥상 낱말의 쓰임이 적절하지 않은 것은?' 문제를 만든다.
 
@@ -145,14 +116,14 @@ def build_prompt(text, prev_targets, focus_pos):
 대한민국 고2~고3 상위권 / 수능·모의고사 수준. 단순 어휘가 아닌 문맥·논리·뉘앙스로 판별 가능해야 한다.
 
 [보기 선정 규칙]
-1. 5개 보기는 영어의 8품사(명사, 대명사, 동사, 형용사, 부사, 전치사, 접속사, 감탄사) 범위 내에서 자유롭게 선택한다.
-2. 5개 품사가 가능한 한 다양하게 섞이도록 선택한다.
+1. 5개 보기는 반드시 형용사/동사/접속사/부사 중에서만 (명사·대명사·전치사·관사 금지).
+2. 가능한 한 4개 품사가 골고루 섞이도록 선택해라 (예: 동사2 + 형용사1 + 부사1 + 접속사1).
 3. 5개 모두 문맥 흐름을 결정짓는 핵심 단어여야 한다.
 4. 모든 보기 단어 앞에 (1)~(5) 번호 + HTML <u>단어</u> 태그.
 
 [정답 변형 규칙]
-5. 이번 문제의 정답 타겟 품사는 반드시 __POS_KOR__ (__POS_EN__) 다.
-6. 정답 단어는 원문을 반의어/정반대 의미 단어로 교체하거나, 대명사/전치사 등의 경우 문맥을 완전히 망가뜨리는 다른 단어로 교체한다.
+__POS_RULE__
+6. 정답 단어는 원문을 반의어/정반대 의미 단어로 교체한다 (품사는 동일하게 유지).
 7. 변형 후 문장은 문법은 자연스럽지만 문맥상 명백히 어긋나야 한다.
 8. 나머지 4개 보기는 원문 그대로 유지.
 
@@ -167,7 +138,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 단어",
     "modified_word": "변형 후 들어간 단어",
-    "answer_pos": "__POS_EN__",
+    "answer_pos": "__POS_FIELD__",
     "explanation": "왜 부적절한지, 어떤 단어가 와야 하는지 한국어 2~3문장"
 }
 
@@ -177,8 +148,8 @@ __TEXT__
 \"\"\"
 """
     return (template
-            .replace("__POS_KOR__", pos_kor)
-            .replace("__POS_EN__", focus_pos)
+            .replace("__POS_RULE__", pos_rule)
+            .replace("__POS_FIELD__", pos_field)
             .replace("__AVOID__", avoid_part)
             .replace("__TEXT__", text))
 
@@ -222,61 +193,11 @@ def upload_to_drive(path):
     return f.get('id')
 
 
-def upload_to_google_doc(questions):
-    s = get_drive_service()
-    if not s or not questions:
-        return None
-    
-    html_content = """
-    <html>
-    <head><meta charset="UTF-8"></head>
-    <body>
-        <h1>Word Twist 학습 자료</h1>
-        <p>생성된 영어 어휘 문맥 문제 목록입니다.</p>
-        <hr>
-    """
-    for idx, q in enumerate(questions, 1):
-        html_content += f"""
-        <h3>[문제 {idx}]</h3>
-        <p>{q.get('question_text', '').replace('<u>', '<b>').replace('</u>', '</b>')}</p>
-        <p><b>정답:</b> {q.get('answer', '')}번</p>
-        <p><b>원래 단어:</b> {q.get('original_word', '')} → <b>변형 단어:</b> {q.get('modified_word', '')}</p>
-        <p><b>품사:</b> {q.get('answer_pos', '')}</p>
-        <p><b>해설:</b> {q.get('explanation', '')}</p>
-        <br>
-        """
-    html_content += "</body></html>"
-    
-    temp_file = "temp_export.html"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        f.write(html_content)
-        
-    file_metadata = {
-        'name': 'Word Twist 생성 문제 목록',
-        'mimeType': 'application/vnd.google-apps.document'
-    }
-    media = MediaFileUpload(temp_file, mimetype='text/html', resumable=True)
-    
-    try:
-        file = s.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        return file.get('id')
-    finally:
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-
-
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
 <style>
-.stApp {
-    background:
-      radial-gradient(1200px 600px at 10% -10%, rgba(168,85,247,0.18), transparent 60%),
-      radial-gradient(1000px 500px at 110% 10%, rgba(236,72,153,0.15), transparent 60%),
-      radial-gradient(900px 600px at 50% 120%, rgba(6,182,212,0.12), transparent 60%),
-      linear-gradient(180deg, #0a0e1a 0%, #0b1020 100%);
-    color: #e5e7eb;
-}
+.stApp { background: radial-gradient(1200px 600px at 10% -10%, rgba(168,85,247,0.18), transparent 60%), radial-gradient(1000px 500px at 110% 10%, rgba(236,72,153,0.15), transparent 60%), radial-gradient(900px 600px at 50% 120%, rgba(6,182,212,0.12), transparent 60%), linear-gradient(180deg, #0a0e1a 0%, #0b1020 100%); color: #e5e7eb; }
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer { visibility: hidden; }
 h1, h2, h3, h4 { color: #e5e7eb !important; letter-spacing: -0.01em; }
@@ -296,7 +217,6 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .metric .value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
 .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.4rem 0; }
 .small-dim { color: #9ca3af; font-size: 0.85rem; }
-
 .loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 99999; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.25s ease; }
 @keyframes fadeIn { from {opacity:0} to {opacity:1} }
 .loading-box { text-align: center; padding: 38px 56px; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border: 1px solid rgba(168,85,247,0.35); box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 60px rgba(168,85,247,0.25); }
@@ -329,12 +249,16 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
-    auto_pos = st.checkbox("정답 품사 자동 로테이션", value=True)
+    pos_mode = st.radio("정답 품사 결정", ["자유", "로테이션", "고정"], index=0, horizontal=True,
+        help="자유: 매번 모델이 4품사 중 가장 함정성 높은 단어를 알아서 고름 (추천). 로테이션: 동사→형용사→부사→접속사 순환. 고정: 한 품사로만.")
     manual_pos = "verb"
-    if not auto_pos:
+    auto_pos = (pos_mode == "로테이션")
+    free_pos = (pos_mode == "자유")
+    if pos_mode == "고정":
         manual_pos = st.selectbox("정답 품사 고정", POS_ROTATION, format_func=lambda x: POS_KOR[x])
     batch_n = st.number_input("한 번에 만들 문제 수", 1, 10, 1)
-    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True)
+    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True,
+        help="여러 개를 한 번에 만들 때 동시에 호출해서 5~10배 빠름.")
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — Gemini · GPT · Claude 통합 어휘 문제 생성기</div>", unsafe_allow_html=True)
@@ -354,8 +278,12 @@ if user_input.strip() != st.session_state.current_text.strip():
 if user_input.strip():
     existing = questions_for_text(user_input)
     used_targets = [q.get("original_word", "?") for q in existing]
-    next_pos = pick_focus_pos(user_input) if auto_pos else manual_pos
-    pos_label = POS_KOR.get(next_pos, "?")
+    if free_pos:
+        pos_label = "자유"
+    elif auto_pos:
+        pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
+    else:
+        pos_label = POS_KOR.get(manual_pos, "?")
 
     metric_html = (
         "<div class='metric-row'>"
@@ -382,7 +310,12 @@ with c2:
 
 def make_one(text):
     prev_t = previous_targets(text)
-    focus = pick_focus_pos(text) if auto_pos else manual_pos
+    if free_pos:
+        focus = None
+    elif auto_pos:
+        focus = pick_focus_pos(text)
+    else:
+        focus = manual_pos
     api_keys = {
         "gemini": st.session_state.get("gemini_api_key", ""),
         "openai": st.session_state.get("openai_api_key", ""),
@@ -449,13 +382,15 @@ if btn_one or btn_batch:
         if n > 1 and parallel_mode:
             render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
             prev_snapshot = previous_targets(user_input)
-            focus_default = pick_focus_pos(user_input) if auto_pos else manual_pos
             tasks_focus = []
-            for i in range(n):
-                if auto_pos:
+            if free_pos:
+                tasks_focus = [None] * n
+            elif auto_pos:
+                focus_default = pick_focus_pos(user_input)
+                for i in range(n):
                     tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
-                else:
-                    tasks_focus.append(manual_pos)
+            else:
+                tasks_focus = [manual_pos] * n
 
             results = []
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
@@ -463,14 +398,11 @@ if btn_one or btn_batch:
                     ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
                               provider, model, api_keys_snapshot): i for i in range(n)
                 }
-                try:
-                    for f in concurrent.futures.as_completed(futures, timeout=120):
-                        try:
-                            results.append(f.result())
-                        except Exception as e:
-                            errors.append(str(e))
-                except concurrent.futures.TimeoutError:
-                    errors.append("병렬 생성 중 시간 초과 발생")
+                for f in concurrent.futures.as_completed(futures):
+                    try:
+                        results.append(f.result())
+                    except Exception as e:
+                        errors.append(str(e))
 
             seen = {t.lower() for t in prev_snapshot}
             for r in results:
@@ -499,7 +431,7 @@ if btn_one or btn_batch:
 
         loader.empty()
         if ok:
-            st.success(str(ok) + "개 문제 생성 완료 (saved_questions.json 저장)")
+            st.success(str(ok) + "개 문제 생성 완료")
         if errors:
             with st.expander("⚠️ 실패 로그"):
                 for e in errors:
@@ -516,8 +448,7 @@ def render_question_card(idx, r):
         "<span class='chip'>정답 " + ans + "번</span>"
     )
     st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
-    qtext = r.get("question_text", "")
-    st.markdown("<div class='q-card'>" + qtext + "</div>", unsafe_allow_html=True)
+    st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
     with st.expander("정답 · 해설"):
         st.markdown("**정답:** " + ans + "번")
         st.markdown("**원래 단어:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
@@ -538,10 +469,8 @@ if user_input.strip():
         with st.expander("📚 이 지문 누적 문제 (" + str(len(saved)) + "개)"):
             for idx, q in enumerate(saved, start=1):
                 meta = (
-                    "**#" + str(idx) + "** &nbsp; "
-                    "정답 " + str(q.get("answer", "?")) + "번 · "
-                    "`" + str(q.get("original_word", "?")) + "` → "
-                    "`" + str(q.get("modified_word", "?")) + "` · "
+                    "**#" + str(idx) + "** &nbsp; 정답 " + str(q.get("answer", "?")) + "번 · "
+                    "`" + str(q.get("original_word", "?")) + "` → `" + str(q.get("modified_word", "?")) + "` · "
                     "품사 " + str(q.get("answer_pos", "?")) + " · "
                     + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?"))
                 )
@@ -550,14 +479,11 @@ if user_input.strip():
                 st.caption(q.get("explanation", ""))
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-cdrv1, cdrv2, cdrv3 = st.columns([1, 1, 2])
+cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
     drv = st.button("☁️ 드라이브 백업")
 with cdrv2:
-    doc_btn = st.button("📝 구글 문서 내보내기")
-with cdrv3:
-    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>JSON 백업 및 생성된 문제 구글 문서 변환을 지원합니다.</div>", unsafe_allow_html=True)
-
+    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
 if drv:
     if os.path.exists(SAVE_FILE):
         try:
@@ -568,16 +494,3 @@ if drv:
             st.error("업로드 실패: " + str(e))
     else:
         st.warning("저장된 문제가 없습니다.")
-
-if doc_btn:
-    results = st.session_state.last_results
-    if results:
-        try:
-            fid = upload_to_google_doc(results)
-            if fid:
-                st.success("구글 문서 생성 완료!")
-                st.markdown(f"[구글 문서 열기](https://docs.google.com/document/d/{fid}/edit)")
-        except Exception as e:
-            st.error("구글 문서 생성 실패: " + str(e))
-    else:
-        st.warning("내보낼 문제가 없습니다. 문제를 먼저 생성해주세요.")
