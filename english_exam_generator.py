@@ -1,198 +1,3 @@
-"""
-Word Twist - 고등 영어 어휘 문맥 문제 출제기
-"""
-import streamlit as st
-import json
-import os
-import concurrent.futures
-
-import google.generativeai as genai
-
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-
-try:
-    import anthropic
-except Exception:
-    anthropic = None
-
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-SAVE_FILE = "saved_questions.json"
-POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
-POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
-
-GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-pro-latest"]
-OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
-CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
-
-
-def load_all_questions():
-    if not os.path.exists(SAVE_FILE):
-        return []
-    try:
-        with open(SAVE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def save_question(data):
-    fd = load_all_questions()
-    fd.append(data)
-    with open(SAVE_FILE, "w", encoding="utf-8") as f:
-        json.dump(fd, f, ensure_ascii=False, indent=4)
-
-
-def questions_for_text(text):
-    t = text.strip()
-    return [i for i in load_all_questions() if i.get("original_text", "").strip() == t]
-
-
-def previous_targets(text):
-    return [i.get("original_word", "") for i in questions_for_text(text) if i.get("original_word")]
-
-
-def previous_pos(text):
-    return [i.get("answer_pos", "") for i in questions_for_text(text) if i.get("answer_pos")]
-
-
-def pick_focus_pos(text):
-    history = previous_pos(text)
-    if not history:
-        return POS_ROTATION[0]
-    counts = {p: history.count(p) for p in POS_ROTATION}
-    mn = min(counts.values())
-    cands = [p for p in POS_ROTATION if counts[p] == mn]
-    for p in POS_ROTATION:
-        if p in cands and history[-1] != p:
-            return p
-    return cands[0]
-
-
-def call_llm(provider, model, prompt, api_keys):
-    if provider == "gemini":
-        genai.configure(api_key=api_keys.get("gemini", ""))
-        return genai.GenerativeModel(model).generate_content(prompt).text
-    if provider == "openai":
-        if OpenAI is None:
-            raise RuntimeError("pip install openai 필요")
-        c = OpenAI(api_key=api_keys.get("openai", ""))
-        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
-        return r.choices[0].message.content
-    if provider == "anthropic":
-        if anthropic is None:
-            raise RuntimeError("pip install anthropic 필요")
-        c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
-        r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
-        return r.content[0].text
-    raise ValueError("unknown provider: " + str(provider))
-
-
-def build_prompt(text, prev_targets, focus_pos=None):
-    avoid_part = ""
-    if prev_targets:
-        avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. 이번 정답 타겟으로 절대 다시 쓰지 마라: " + ", ".join(prev_targets)
-
-    if focus_pos:
-        pos_kor = POS_KOR[focus_pos]
-        pos_rule = "5. 이번 문제의 정답 타겟 품사는 반드시 " + pos_kor + " (" + focus_pos + ") 다. 위 5개 보기 중 " + focus_pos + " 1개를 골라 변형해라."
-        pos_field = focus_pos
-    else:
-        pos_rule = "5. 5개 보기 중 정답(변형할 단어) 1개는 동사/형용사/부사/접속사 중 어느 품사든 OK. 지문 전체 흐름에서 가장 함정성이 높고 문맥상 변별력이 큰 단어 1개를 자유롭게 골라라. 한 품사에 치우치지 말고 매번 다른 품사를 선택해도 좋다."
-        pos_field = "verb 또는 adjective 또는 adverb 또는 conjunction 중 실제 변형한 품사"
-
-    template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어휘 문제 전문가다.
-다음 영어 지문으로 '문맥상 낱말의 쓰임이 적절하지 않은 것은?' 문제를 만든다.
-
-[난이도]
-대한민국 고2~고3 상위권 / 수능·모의고사 수준. 단순 어휘가 아닌 문맥·논리·뉘앙스로 판별 가능해야 한다.
-
-[보기 선정 규칙]
-1. 5개 보기는 반드시 형용사/동사/접속사/부사 중에서만 (명사·대명사·전치사·관사 금지).
-2. 가능한 한 4개 품사가 골고루 섞이도록 선택해라 (예: 동사2 + 형용사1 + 부사1 + 접속사1).
-3. 5개 모두 문맥 흐름을 결정짓는 핵심 단어여야 한다.
-4. 모든 보기 단어 앞에 (1)~(5) 번호 + HTML <u>단어</u> 태그.
-
-[정답 변형 규칙]
-__POS_RULE__
-6. 정답 단어는 원문을 반의어/정반대 의미 단어로 교체한다 (품사는 동일하게 유지).
-7. 변형 후 문장은 문법은 자연스럽지만 문맥상 명백히 어긋나야 한다.
-8. 나머지 4개 보기는 원문 그대로 유지.
-
-[전체 흐름]
-9. 변형된 1개를 제외하고 지문의 내용·논리·문장 순서·구조는 원문과 100% 동일.
-__AVOID__
-
-[출력]
-마크다운 코드블록 없이 순수 JSON 한 덩어리만:
-{
-    "question_text": "(<u>(1) word</u> 형태 5개 포함된 영어 지문 전문)",
-    "answer": 1,
-    "original_word": "변형 전 원래 단어",
-    "modified_word": "변형 후 들어간 단어",
-    "answer_pos": "__POS_FIELD__",
-    "explanation": "왜 부적절한지, 어떤 단어가 와야 하는지 한국어 2~3문장"
-}
-
-원문 텍스트:
-\"\"\"
-__TEXT__
-\"\"\"
-"""
-    return (template
-            .replace("__POS_RULE__", pos_rule)
-            .replace("__POS_FIELD__", pos_field)
-            .replace("__AVOID__", avoid_part)
-            .replace("__TEXT__", text))
-
-
-def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys):
-    prompt = build_prompt(text, prev_targets, focus_pos)
-    raw = call_llm(provider, model, prompt, api_keys)
-    cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
-    s = cleaned.find("{")
-    e = cleaned.rfind("}")
-    if s != -1 and e != -1:
-        cleaned = cleaned[s:e + 1]
-    return json.loads(cleaned)
-
-
-def get_drive_service():
-    creds = None
-    if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if os.path.exists('credentials.json'):
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-            else:
-                st.error("credentials.json 파일이 필요합니다.")
-                return None
-        with open('token.json', 'w') as token:
-            token.write(creds.to_json())
-    return build('drive', 'v3', credentials=creds)
-
-
-def upload_to_drive(path):
-    s = get_drive_service()
-    if not s:
-        return None
-    media = MediaFileUpload(path, mimetype='application/json')
-    f = s.files().create(body={'name': os.path.basename(path)}, media_body=media, fields='id').execute()
-    return f.get('id')
-
-
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
@@ -249,19 +54,21 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
-    pos_mode = st.radio("정답 품사 결정", ["자유", "로테이션", "고정"], index=0, horizontal=True,
-        help="자유: 매번 모델이 4품사 중 가장 함정성 높은 단어를 알아서 고름 (추천). 로테이션: 동사→형용사→부사→접속사 순환. 고정: 한 품사로만.")
+    q_type_label = st.radio("문제 유형", ["어휘 (문맥상 부적절한 단어)", "어법 (어법상 틀린 것)"], index=0,
+        help="어휘: 문맥에서 부적절한 단어. 어법: 분사·관계사·시제·일치 등 어법 오류.")
+    q_type = "grammar" if q_type_label.startswith("어법") else "vocab"
+    pos_mode = st.radio("정답 품사 결정 (어휘만)", ["자유", "로테이션", "고정"], index=0, horizontal=True,
+        help="자유: 모델이 알아서. 로테이션: 동사→형용사→부사→접속사 순환. 고정: 한 품사로만.")
     manual_pos = "verb"
     auto_pos = (pos_mode == "로테이션")
     free_pos = (pos_mode == "자유")
     if pos_mode == "고정":
         manual_pos = st.selectbox("정답 품사 고정", POS_ROTATION, format_func=lambda x: POS_KOR[x])
     batch_n = st.number_input("한 번에 만들 문제 수", 1, 10, 1)
-    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True,
-        help="여러 개를 한 번에 만들 때 동시에 호출해서 5~10배 빠름.")
+    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True)
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — Gemini · GPT · Claude 통합 어휘 문제 생성기</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
 
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
@@ -278,7 +85,9 @@ if user_input.strip() != st.session_state.current_text.strip():
 if user_input.strip():
     existing = questions_for_text(user_input)
     used_targets = [q.get("original_word", "?") for q in existing]
-    if free_pos:
+    if q_type == "grammar":
+        pos_label = "어법"
+    elif free_pos:
         pos_label = "자유"
     elif auto_pos:
         pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
@@ -288,14 +97,13 @@ if user_input.strip():
     metric_html = (
         "<div class='metric-row'>"
         "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
-        "<div class='metric'><div class='label'>다음 정답 품사</div><div class='value'>" + pos_label + "</div></div>"
+        "<div class='metric'><div class='label'>다음 정답</div><div class='value'>" + pos_label + "</div></div>"
         "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
         "</div>"
     )
     st.markdown(metric_html, unsafe_allow_html=True)
-
     if used_targets:
-        st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답 단어:</div>", unsafe_allow_html=True)
+        st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답:</div>", unsafe_allow_html=True)
         chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
         st.markdown(chips, unsafe_allow_html=True)
 
@@ -310,6 +118,7 @@ with c2:
 
 def make_one(text):
     prev_t = previous_targets(text)
+    prev_c = previous_choice_words(text)
     if free_pos:
         focus = None
     elif auto_pos:
@@ -324,7 +133,8 @@ def make_one(text):
     last_err = None
     for attempt in range(4):
         try:
-            result = generate_one_raw(text, prev_t, focus, provider, model, api_keys)
+            result = generate_one_raw(text, prev_t, focus, provider, model, api_keys,
+                                       q_type=q_type, prev_choices=prev_c)
         except Exception as e:
             last_err = e
             continue
@@ -338,6 +148,7 @@ def make_one(text):
         result["original_text"] = text.strip()
         result["_provider"] = provider
         result["_model"] = model
+        result["_q_type"] = q_type
         save_question(result)
         st.session_state.last_results.append(result)
         return result
@@ -354,14 +165,15 @@ def render_loading(placeholder, current, total, provider_name, mode_label=""):
         "<div class='spinner'></div>"
         "<div class='loading-title'>문제를 만들고 있어요</div>"
         "<div class='loading-sub'>" + sub + " <span class='loading-dots'></span></div>"
-        + hint +
-        "</div></div>"
+        + hint + "</div></div>"
     )
     placeholder.markdown(overlay_html, unsafe_allow_html=True)
 
 
-def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys):
-    return generate_one_raw(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys)
+def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
+                          q_type_snapshot, prev_choices_snapshot):
+    return generate_one_raw(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
+                             q_type=q_type_snapshot, prev_choices=prev_choices_snapshot)
 
 
 if btn_one or btn_batch:
@@ -382,8 +194,10 @@ if btn_one or btn_batch:
         if n > 1 and parallel_mode:
             render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
             prev_snapshot = previous_targets(user_input)
+            prev_choices_snap = previous_choice_words(user_input)
+
             tasks_focus = []
-            if free_pos:
+            if free_pos or q_type == "grammar":
                 tasks_focus = [None] * n
             elif auto_pos:
                 focus_default = pick_focus_pos(user_input)
@@ -396,7 +210,7 @@ if btn_one or btn_batch:
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
                 futures = {
                     ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
-                              provider, model, api_keys_snapshot): i for i in range(n)
+                              provider, model, api_keys_snapshot, q_type, prev_choices_snap): i for i in range(n)
                 }
                 for f in concurrent.futures.as_completed(futures):
                     try:
@@ -417,6 +231,7 @@ if btn_one or btn_batch:
                 r["original_text"] = user_input.strip()
                 r["_provider"] = provider
                 r["_model"] = model
+                r["_q_type"] = q_type
                 save_question(r)
                 st.session_state.last_results.append(r)
                 ok += 1
@@ -442,8 +257,11 @@ def render_question_card(idx, r):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
     ans = str(r.get("answer", "?"))
+    qtype = str(r.get("_q_type", "vocab"))
+    qtype_label = "어법" if qtype == "grammar" else "어휘"
     chips = (
         "<span class='chip chip-accent'>" + prov + "</span>"
+        "<span class='chip'>" + qtype_label + "</span>"
         "<span class='chip'>" + pos + "</span>"
         "<span class='chip'>정답 " + ans + "번</span>"
     )
@@ -451,8 +269,8 @@ def render_question_card(idx, r):
     st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
     with st.expander("정답 · 해설"):
         st.markdown("**정답:** " + ans + "번")
-        st.markdown("**원래 단어:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
-        st.markdown("**품사:** " + pos)
+        st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
+        st.markdown("**카테고리:** " + pos)
         st.markdown("**해설:** " + str(r.get("explanation", "")))
 
 
@@ -468,12 +286,10 @@ if user_input.strip():
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
         with st.expander("📚 이 지문 누적 문제 (" + str(len(saved)) + "개)"):
             for idx, q in enumerate(saved, start=1):
-                meta = (
-                    "**#" + str(idx) + "** &nbsp; 정답 " + str(q.get("answer", "?")) + "번 · "
+                qt = "어법" if q.get("_q_type") == "grammar" else "어휘"
+                meta = ("**#" + str(idx) + "** &nbsp; [" + qt + "] 정답 " + str(q.get("answer", "?")) + "번 · "
                     "`" + str(q.get("original_word", "?")) + "` → `" + str(q.get("modified_word", "?")) + "` · "
-                    "품사 " + str(q.get("answer_pos", "?")) + " · "
-                    + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?"))
-                )
+                    + str(q.get("answer_pos", "?")) + " · " + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?")))
                 st.markdown(meta)
                 st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
                 st.caption(q.get("explanation", ""))
