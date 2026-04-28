@@ -1,6 +1,6 @@
 """
 Word Twist - 고등 영어 어휘 문맥 문제 출제기
-Gemini / GPT / Claude 통합, 한 지문에서 10+ 문제 생성
+Gemini / GPT / Claude 통합, 구글 문서(Google Docs) 연동 지원
 """
 import streamlit as st
 import json
@@ -25,6 +25,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+# drive.file 권한은 앱이 생성한 파일을 관리하고 변환할 수 있는 권한을 포함합니다.
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SAVE_FILE = "saved_questions.json"
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
@@ -79,8 +80,7 @@ def pick_focus_pos(text):
 
 
 def call_llm(provider, model, prompt, api_keys):
-    timeout_sec = 30  # 개별 API 호출 제한 시간 추가
-
+    timeout_sec = 30
     if provider == "gemini":
         api_key = api_keys.get("gemini", "").strip()
         if not api_key:
@@ -90,7 +90,6 @@ def call_llm(provider, model, prompt, api_keys):
             prompt, 
             request_options={"timeout": timeout_sec}
         ).text
-        
     if provider == "openai":
         if OpenAI is None:
             raise RuntimeError("pip install openai 필요")
@@ -105,7 +104,6 @@ def call_llm(provider, model, prompt, api_keys):
             timeout=timeout_sec
         )
         return r.choices[0].message.content
-        
     if provider == "anthropic":
         if anthropic is None:
             raise RuntimeError("pip install anthropic 필요")
@@ -120,7 +118,6 @@ def call_llm(provider, model, prompt, api_keys):
             timeout=timeout_sec
         )
         return r.content[0].text
-        
     raise ValueError("unknown provider: " + str(provider))
 
 
@@ -128,9 +125,7 @@ def build_prompt(text, prev_targets, focus_pos):
     avoid_part = ""
     if prev_targets:
         avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. 이번 정답 타겟으로 절대 다시 쓰지 마라: " + ", ".join(prev_targets)
-
     pos_kor = POS_KOR[focus_pos]
-
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어휘 문제 전문가다.
 다음 영어 지문으로 '문맥상 낱말의 쓰임이 적절하지 않은 것은?' 문제를 만든다.
 
@@ -215,6 +210,50 @@ def upload_to_drive(path):
     return f.get('id')
 
 
+def upload_to_google_doc(questions):
+    """생성된 문제들을 구글 문서(Google Doc)로 변환하여 업로드"""
+    s = get_drive_service()
+    if not s or not questions:
+        return None
+    
+    # HTML 형식으로 문서 내용 작성
+    html_content = """
+    <html>
+    <head><meta charset="UTF-8"></head>
+    <body>
+        <h1>Word Twist 학습 자료</h1>
+        <p>생성된 영어 어휘 문맥 문제 목록입니다.</p>
+        <hr>
+    """
+    for idx, q in enumerate(questions, 1):
+        html_content += f"""
+        <h3>[문제 {idx}]</h3>
+        <p>{q.get('question_text', '').replace('<u>', '<b>').replace('</u>', '</b>')}</p>
+        <p><b>정답:</b> {q.get('answer', '')}번</p>
+        <p><b>원래 단어:</b> {q.get('original_word', '')} → <b>변형 단어:</b> {q.get('modified_word', '')}</p>
+        <p><b>해설:</b> {q.get('explanation', '')}</p>
+        <br>
+        """
+    html_content += "</body></html>"
+    
+    temp_file = "temp_export.html"
+    with open(temp_file, "w", encoding="utf-8") as f:
+        f.write(html_content)
+        
+    file_metadata = {
+        'name': 'Word Twist 생성 문제 목록',
+        'mimeType': 'application/vnd.google-apps.document'  # 구글 문서로 자동 변환 지정
+    }
+    media = MediaFileUpload(temp_file, mimetype='text/html', resumable=True)
+    
+    try:
+        file = s.files().create(body=file_metadata, media_body=media, fields='id').execute()
+        return file.get('id')
+    finally:
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
@@ -284,8 +323,7 @@ with st.sidebar:
     if not auto_pos:
         manual_pos = st.selectbox("정답 품사 고정", POS_ROTATION, format_func=lambda x: POS_KOR[x])
     batch_n = st.number_input("한 번에 만들 문제 수", 1, 10, 1)
-    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True,
-        help="여러 개를 한 번에 만들 때 동시에 호출해서 5~10배 빠름. 단 같은 단어가 정답으로 겹칠 수 있어요(자동 제외).")
+    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True)
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — Gemini · GPT · Claude 통합 어휘 문제 생성기</div>", unsafe_allow_html=True)
@@ -401,7 +439,6 @@ if btn_one or btn_batch:
             render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
             prev_snapshot = previous_targets(user_input)
             focus_default = pick_focus_pos(user_input) if auto_pos else manual_pos
-
             tasks_focus = []
             for i in range(n):
                 if auto_pos:
@@ -416,7 +453,6 @@ if btn_one or btn_batch:
                               provider, model, api_keys_snapshot): i for i in range(n)
                 }
                 try:
-                    # 병렬 처리 전체 블록에도 타임아웃(120초) 적용
                     for f in concurrent.futures.as_completed(futures, timeout=120):
                         try:
                             results.append(f.result())
@@ -503,11 +539,14 @@ if user_input.strip():
                 st.caption(q.get("explanation", ""))
 
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-cdrv1, cdrv2 = st.columns([1, 3])
+cdrv1, cdrv2, cdrv3 = st.columns([1, 1, 2])
 with cdrv1:
     drv = st.button("☁️ 드라이브 백업")
 with cdrv2:
-    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
+    doc_btn = st.button("📝 구글 문서 내보내기")
+with cdrv3:
+    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>JSON 백업 및 생성된 문제 구글 문서 변환을 지원합니다.</div>", unsafe_allow_html=True)
+
 if drv:
     if os.path.exists(SAVE_FILE):
         try:
@@ -518,3 +557,16 @@ if drv:
             st.error("업로드 실패: " + str(e))
     else:
         st.warning("저장된 문제가 없습니다.")
+
+if doc_btn:
+    results = st.session_state.last_results
+    if results:
+        try:
+            fid = upload_to_google_doc(results)
+            if fid:
+                st.success("구글 문서 생성 완료!")
+                st.markdown(f"[구글 문서 열기](https://docs.google.com/document/d/{fid}/edit)")
+        except Exception as e:
+            st.error("구글 문서 생성 실패: " + str(e))
+    else:
+        st.warning("내보낼 문제가 없습니다. 문제를 먼저 생성해주세요.")
