@@ -79,21 +79,48 @@ def pick_focus_pos(text):
 
 
 def call_llm(provider, model, prompt, api_keys):
+    timeout_sec = 30  # 개별 API 호출 제한 시간 추가
+
     if provider == "gemini":
-        genai.configure(api_key=api_keys.get("gemini", ""))
-        return genai.GenerativeModel(model).generate_content(prompt).text
+        api_key = api_keys.get("gemini", "").strip()
+        if not api_key:
+            raise ValueError("Gemini API 키가 입력되지 않았습니다.")
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel(model).generate_content(
+            prompt, 
+            request_options={"timeout": timeout_sec}
+        ).text
+        
     if provider == "openai":
         if OpenAI is None:
             raise RuntimeError("pip install openai 필요")
-        c = OpenAI(api_key=api_keys.get("openai", ""))
-        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
+        api_key = api_keys.get("openai", "").strip()
+        if not api_key:
+            raise ValueError("OpenAI API 키가 입력되지 않았습니다.")
+        c = OpenAI(api_key=api_key)
+        r = c.chat.completions.create(
+            model=model, 
+            messages=[{"role": "user", "content": prompt}], 
+            temperature=0.9,
+            timeout=timeout_sec
+        )
         return r.choices[0].message.content
+        
     if provider == "anthropic":
         if anthropic is None:
             raise RuntimeError("pip install anthropic 필요")
-        c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
-        r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
+        api_key = api_keys.get("anthropic", "").strip()
+        if not api_key:
+            raise ValueError("Anthropic API 키가 입력되지 않았습니다.")
+        c = anthropic.Anthropic(api_key=api_key)
+        r = c.messages.create(
+            model=model, 
+            max_tokens=4096, 
+            messages=[{"role": "user", "content": prompt}],
+            timeout=timeout_sec
+        )
         return r.content[0].text
+        
     raise ValueError("unknown provider: " + str(provider))
 
 
@@ -388,11 +415,15 @@ if btn_one or btn_batch:
                     ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
                               provider, model, api_keys_snapshot): i for i in range(n)
                 }
-                for f in concurrent.futures.as_completed(futures):
-                    try:
-                        results.append(f.result())
-                    except Exception as e:
-                        errors.append(str(e))
+                try:
+                    # 병렬 처리 전체 블록에도 타임아웃(120초) 적용
+                    for f in concurrent.futures.as_completed(futures, timeout=120):
+                        try:
+                            results.append(f.result())
+                        except Exception as e:
+                            errors.append(str(e))
+                except concurrent.futures.TimeoutError:
+                    errors.append("병렬 생성 중 시간 초과 발생")
 
             seen = {t.lower() for t in prev_snapshot}
             for r in results:
