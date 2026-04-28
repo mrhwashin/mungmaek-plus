@@ -294,6 +294,64 @@ section[data-testid="stSidebar"] {
 .metric .value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
 .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.4rem 0; }
 .small-dim { color: #9ca3af; font-size: 0.85rem; }
+
+/* 중앙 로딩 오버레이 */
+.loading-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.25s ease;
+}
+@keyframes fadeIn { from {opacity:0} to {opacity:1} }
+.loading-box {
+    text-align: center;
+    padding: 38px 56px;
+    border-radius: 22px;
+    background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+    border: 1px solid rgba(168,85,247,0.35);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 60px rgba(168,85,247,0.25);
+}
+.spinner {
+    width: 84px; height: 84px;
+    border-radius: 50%;
+    margin: 0 auto 24px;
+    background: conic-gradient(from 0deg, #a855f7, #ec4899, #06b6d4, #a855f7);
+    -webkit-mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%);
+    mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%);
+    animation: spin 1.2s linear infinite;
+    filter: drop-shadow(0 0 18px rgba(168,85,247,0.5));
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-title {
+    color: #fff;
+    font-size: 1.35rem;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+    background: linear-gradient(90deg, #c084fc, #ec4899);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.loading-sub {
+    color: #cbd5e1; font-size: 0.95rem;
+    display: flex; align-items: center; gap: 6px; justify-content: center;
+}
+.loading-dots::after {
+    content: ''; display: inline-block; width: 1em; text-align: left;
+    animation: dots 1.4s steps(4, end) infinite;
+}
+@keyframes dots {
+    0%   { content: ''; }
+    25%  { content: '.'; }
+    50%  { content: '..'; }
+    75%  { content: '...'; }
+    100% { content: ''; }
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -422,22 +480,36 @@ def make_one(text):
     raise RuntimeError("생성 실패: " + str(last_err))
 
 
+def render_loading(placeholder, current, total, provider_name):
+    overlay_html = (
+        "<div class='loading-overlay'>"
+        "<div class='loading-box'>"
+        "<div class='spinner'></div>"
+        "<div class='loading-title'>문제를 만들고 있어요</div>"
+        "<div class='loading-sub'>"
+        + provider_name.upper() + " · " + str(current) + " / " + str(total)
+        + " <span class='loading-dots'></span>"
+        "</div></div></div>"
+    )
+    placeholder.markdown(overlay_html, unsafe_allow_html=True)
+
+
 if btn_one or btn_batch:
     if not user_input.strip():
         st.warning("먼저 영어 지문을 입력해주세요.")
     else:
         n = int(batch_n) if btn_batch else 1
-        progress = st.progress(0, text="0 / " + str(n))
+        loader = st.empty()
         ok = 0
         errors = []
         for i in range(n):
+            render_loading(loader, i + 1, n, provider)
             try:
                 make_one(user_input)
                 ok += 1
             except Exception as e:
                 errors.append(str(e))
-            progress.progress((i + 1) / n, text=str(i + 1) + " / " + str(n))
-        progress.empty()
+        loader.empty()
         if ok:
             st.success(str(ok) + "개 문제 생성 완료 (saved_questions.json 저장)")
         if errors:
