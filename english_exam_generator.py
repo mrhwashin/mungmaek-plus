@@ -1,6 +1,6 @@
 """
 Word Twist - 고등 영어 어휘 문맥 문제 출제기
-Gemini / GPT / Claude 통합, 구글 문서(Google Docs) 연동 지원
+Gemini / GPT / Claude 통합, 구글 문서(Google Docs) 연동 및 8품사 지원
 """
 import streamlit as st
 import json
@@ -25,11 +25,21 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# drive.file 권한은 앱이 생성한 파일을 관리하고 변환할 수 있는 권한을 포함합니다.
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SAVE_FILE = "saved_questions.json"
-POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
-POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
+
+# 8품사 전체로 확장
+POS_ROTATION = ["noun", "pronoun", "verb", "adjective", "adverb", "preposition", "conjunction", "interjection"]
+POS_KOR = {
+    "noun": "명사",
+    "pronoun": "대명사",
+    "verb": "동사",
+    "adjective": "형용사",
+    "adverb": "부사",
+    "preposition": "전치사",
+    "conjunction": "접속사",
+    "interjection": "감탄사"
+}
 
 GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
@@ -126,6 +136,8 @@ def build_prompt(text, prev_targets, focus_pos):
     if prev_targets:
         avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. 이번 정답 타겟으로 절대 다시 쓰지 마라: " + ", ".join(prev_targets)
     pos_kor = POS_KOR[focus_pos]
+    
+    # 8품사 전체 활용을 위한 프롬프트 수정
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어휘 문제 전문가다.
 다음 영어 지문으로 '문맥상 낱말의 쓰임이 적절하지 않은 것은?' 문제를 만든다.
 
@@ -133,14 +145,14 @@ def build_prompt(text, prev_targets, focus_pos):
 대한민국 고2~고3 상위권 / 수능·모의고사 수준. 단순 어휘가 아닌 문맥·논리·뉘앙스로 판별 가능해야 한다.
 
 [보기 선정 규칙]
-1. 5개 보기는 반드시 형용사/동사/접속사/부사 중에서만 (명사·전치사·관사 등 금지).
+1. 5개 보기는 영어의 8품사(명사, 대명사, 동사, 형용사, 부사, 전치사, 접속사, 감탄사) 범위 내에서 자유롭게 선택한다.
 2. 5개 품사가 가능한 한 다양하게 섞이도록 선택한다.
 3. 5개 모두 문맥 흐름을 결정짓는 핵심 단어여야 한다.
 4. 모든 보기 단어 앞에 (1)~(5) 번호 + HTML <u>단어</u> 태그.
 
 [정답 변형 규칙]
 5. 이번 문제의 정답 타겟 품사는 반드시 __POS_KOR__ (__POS_EN__) 다.
-6. 정답 단어는 원문을 반의어/정반대 의미 단어로 교체한다.
+6. 정답 단어는 원문을 반의어/정반대 의미 단어로 교체하거나, 대명사/전치사 등의 경우 문맥을 완전히 망가뜨리는 다른 단어로 교체한다.
 7. 변형 후 문장은 문법은 자연스럽지만 문맥상 명백히 어긋나야 한다.
 8. 나머지 4개 보기는 원문 그대로 유지.
 
@@ -211,12 +223,10 @@ def upload_to_drive(path):
 
 
 def upload_to_google_doc(questions):
-    """생성된 문제들을 구글 문서(Google Doc)로 변환하여 업로드"""
     s = get_drive_service()
     if not s or not questions:
         return None
     
-    # HTML 형식으로 문서 내용 작성
     html_content = """
     <html>
     <head><meta charset="UTF-8"></head>
@@ -231,6 +241,7 @@ def upload_to_google_doc(questions):
         <p>{q.get('question_text', '').replace('<u>', '<b>').replace('</u>', '</b>')}</p>
         <p><b>정답:</b> {q.get('answer', '')}번</p>
         <p><b>원래 단어:</b> {q.get('original_word', '')} → <b>변형 단어:</b> {q.get('modified_word', '')}</p>
+        <p><b>품사:</b> {q.get('answer_pos', '')}</p>
         <p><b>해설:</b> {q.get('explanation', '')}</p>
         <br>
         """
@@ -242,7 +253,7 @@ def upload_to_google_doc(questions):
         
     file_metadata = {
         'name': 'Word Twist 생성 문제 목록',
-        'mimeType': 'application/vnd.google-apps.document'  # 구글 문서로 자동 변환 지정
+        'mimeType': 'application/vnd.google-apps.document'
     }
     media = MediaFileUpload(temp_file, mimetype='text/html', resumable=True)
     
