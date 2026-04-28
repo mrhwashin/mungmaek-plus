@@ -5,6 +5,7 @@ Gemini / GPT / Claude 통합, 한 지문에서 10+ 문제 생성
 import streamlit as st
 import json
 import os
+import concurrent.futures
 
 import google.generativeai as genai
 
@@ -24,27 +25,16 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# ============================================================
-# 상수
-# ============================================================
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SAVE_FILE = "saved_questions.json"
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
 
-GEMINI_MODELS = [
-    "gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash",
-    "gemini-1.5-flash-latest", "gemini-pro-latest",
-]
+GEMINI_MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
-CLAUDE_MODELS = [
-    "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
-    "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022",
-]
+CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 
-# ============================================================
-# 저장/조회
-# ============================================================
+
 def load_all_questions():
     if not os.path.exists(SAVE_FILE):
         return []
@@ -88,9 +78,6 @@ def pick_focus_pos(text):
     return cands[0]
 
 
-# ============================================================
-# LLM 호출
-# ============================================================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
         genai.configure(api_key=api_keys.get("gemini", ""))
@@ -99,20 +86,13 @@ def call_llm(provider, model, prompt, api_keys):
         if OpenAI is None:
             raise RuntimeError("pip install openai 필요")
         c = OpenAI(api_key=api_keys.get("openai", ""))
-        r = c.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.9,
-        )
+        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
         return r.choices[0].message.content
     if provider == "anthropic":
         if anthropic is None:
             raise RuntimeError("pip install anthropic 필요")
         c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
-        r = c.messages.create(
-            model=model, max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
         return r.content[0].text
     raise ValueError("unknown provider: " + str(provider))
 
@@ -120,11 +100,7 @@ def call_llm(provider, model, prompt, api_keys):
 def build_prompt(text, prev_targets, focus_pos):
     avoid_part = ""
     if prev_targets:
-        avoid_part = (
-            "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. "
-            "이번 정답 타겟으로 절대 다시 쓰지 마라: "
-            + ", ".join(prev_targets)
-        )
+        avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 문제에서 정답으로 이미 사용됨. 이번 정답 타겟으로 절대 다시 쓰지 마라: " + ", ".join(prev_targets)
 
     pos_kor = POS_KOR[focus_pos]
 
@@ -184,9 +160,6 @@ def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys):
     return json.loads(cleaned)
 
 
-# ============================================================
-# 드라이브
-# ============================================================
 def get_drive_service():
     creds = None
     if os.path.exists('token.json'):
@@ -211,16 +184,10 @@ def upload_to_drive(path):
     if not s:
         return None
     media = MediaFileUpload(path, mimetype='application/json')
-    f = s.files().create(
-        body={'name': os.path.basename(path)},
-        media_body=media, fields='id',
-    ).execute()
+    f = s.files().create(body={'name': os.path.basename(path)}, media_body=media, fields='id').execute()
     return f.get('id')
 
 
-# ============================================================
-# Streamlit UI
-# ============================================================
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
@@ -236,148 +203,51 @@ CSS = """
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer { visibility: hidden; }
 h1, h2, h3, h4 { color: #e5e7eb !important; letter-spacing: -0.01em; }
-.hero-title {
-    font-size: 2.6rem; font-weight: 800; line-height: 1.1;
-    background: linear-gradient(90deg, #a855f7, #ec4899, #06b6d4);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-    margin: 0.2rem 0 0.4rem 0;
-}
+.hero-title { font-size: 2.6rem; font-weight: 800; line-height: 1.1; background: linear-gradient(90deg, #a855f7, #ec4899, #06b6d4); -webkit-background-clip: text; background-clip: text; color: transparent; margin: 0.2rem 0 0.4rem 0; }
 .hero-sub { color: #9ca3af; font-size: 0.95rem; margin-bottom: 1.4rem; }
-.chip {
-    display: inline-block; padding: 4px 10px; border-radius: 999px;
-    font-size: 0.75rem; font-weight: 600; margin-right: 6px; margin-bottom: 4px;
-    border: 1px solid rgba(255,255,255,0.08);
-    background: rgba(255,255,255,0.03); color: #9ca3af;
-}
-.chip-accent {
-    background: linear-gradient(90deg, rgba(168,85,247,0.3), rgba(236,72,153,0.3));
-    color: #fff; border-color: transparent;
-}
-.q-card {
-    background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
-    border: 1px solid rgba(255,255,255,0.08); border-radius: 18px;
-    padding: 1.4rem 1.6rem; line-height: 1.85; font-size: 1.02rem;
-    box-shadow: 0 10px 40px rgba(0,0,0,0.3);
-}
-.q-card u { text-decoration: none; border-bottom: 2px solid #a855f7;
-            padding: 0 2px; color: #fff; font-weight: 600; }
-.stTextArea textarea {
-    background: rgba(255,255,255,0.03) !important;
-    color: #e5e7eb !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    border-radius: 12px !important;
-}
-.stButton > button {
-    background: linear-gradient(90deg, #a855f7, #ec4899);
-    color: white; border: none; border-radius: 12px;
-    padding: 0.55rem 1.1rem; font-weight: 600;
-    box-shadow: 0 8px 22px rgba(168,85,247,0.25);
-    transition: transform 0.15s ease, box-shadow 0.15s ease;
-}
-.stButton > button:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 12px 28px rgba(236,72,153,0.35);
-}
-section[data-testid="stSidebar"] {
-    background: rgba(10,14,26,0.7);
-    border-right: 1px solid rgba(255,255,255,0.08);
-}
+.chip { display: inline-block; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; margin-right: 6px; margin-bottom: 4px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); color: #9ca3af; }
+.chip-accent { background: linear-gradient(90deg, rgba(168,85,247,0.3), rgba(236,72,153,0.3)); color: #fff; border-color: transparent; }
+.q-card { background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 1.4rem 1.6rem; line-height: 1.85; font-size: 1.02rem; box-shadow: 0 10px 40px rgba(0,0,0,0.3); }
+.q-card u { text-decoration: none; border-bottom: 2px solid #a855f7; padding: 0 2px; color: #fff; font-weight: 600; }
+.stTextArea textarea { background: rgba(255,255,255,0.03) !important; color: #e5e7eb !important; border: 1px solid rgba(255,255,255,0.08) !important; border-radius: 12px !important; }
+.stButton > button { background: linear-gradient(90deg, #a855f7, #ec4899); color: white; border: none; border-radius: 12px; padding: 0.55rem 1.1rem; font-weight: 600; box-shadow: 0 8px 22px rgba(168,85,247,0.25); transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.stButton > button:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(236,72,153,0.35); }
+section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right: 1px solid rgba(255,255,255,0.08); }
 .metric-row { display: flex; gap: 14px; flex-wrap: wrap; }
-.metric {
-    flex: 1; min-width: 140px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 14px; padding: 0.9rem 1rem;
-}
-.metric .label { color: #9ca3af; font-size: 0.75rem;
-                 text-transform: uppercase; letter-spacing: 0.06em; }
+.metric { flex: 1; min-width: 140px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; padding: 0.9rem 1rem; }
+.metric .label { color: #9ca3af; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; }
 .metric .value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
 .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.4rem 0; }
 .small-dim { color: #9ca3af; font-size: 0.85rem; }
 
-/* 중앙 로딩 오버레이 */
-.loading-overlay {
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-    z-index: 99999;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    animation: fadeIn 0.25s ease;
-}
+.loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 99999; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.25s ease; }
 @keyframes fadeIn { from {opacity:0} to {opacity:1} }
-.loading-box {
-    text-align: center;
-    padding: 38px 56px;
-    border-radius: 22px;
-    background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
-    border: 1px solid rgba(168,85,247,0.35);
-    box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 60px rgba(168,85,247,0.25);
-}
-.spinner {
-    width: 84px; height: 84px;
-    border-radius: 50%;
-    margin: 0 auto 24px;
-    background: conic-gradient(from 0deg, #a855f7, #ec4899, #06b6d4, #a855f7);
-    -webkit-mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%);
-    mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%);
-    animation: spin 1.2s linear infinite;
-    filter: drop-shadow(0 0 18px rgba(168,85,247,0.5));
-}
+.loading-box { text-align: center; padding: 38px 56px; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border: 1px solid rgba(168,85,247,0.35); box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 60px rgba(168,85,247,0.25); }
+.spinner { width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 24px; background: conic-gradient(from 0deg, #a855f7, #ec4899, #06b6d4, #a855f7); -webkit-mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); animation: spin 1.2s linear infinite; filter: drop-shadow(0 0 18px rgba(168,85,247,0.5)); }
 @keyframes spin { to { transform: rotate(360deg); } }
-.loading-title {
-    color: #fff;
-    font-size: 1.35rem;
-    font-weight: 800;
-    letter-spacing: -0.01em;
-    margin-bottom: 6px;
-    background: linear-gradient(90deg, #c084fc, #ec4899);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-.loading-sub {
-    color: #cbd5e1; font-size: 0.95rem;
-    display: flex; align-items: center; gap: 6px; justify-content: center;
-}
-.loading-dots::after {
-    content: ''; display: inline-block; width: 1em; text-align: left;
-    animation: dots 1.4s steps(4, end) infinite;
-}
-@keyframes dots {
-    0%   { content: ''; }
-    25%  { content: '.'; }
-    50%  { content: '..'; }
-    75%  { content: '...'; }
-    100% { content: ''; }
-}
+.loading-title { color: #fff; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 6px; background: linear-gradient(90deg, #c084fc, #ec4899); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.loading-sub { color: #cbd5e1; font-size: 0.95rem; display: flex; align-items: center; gap: 6px; justify-content: center; }
+.loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
+@keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-# ---------- 사이드바 ----------
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    provider = st.radio(
-        "Provider", ["gemini", "openai", "anthropic"],
-        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude"}[x],
-        horizontal=True,
-    )
+    provider = st.radio("Provider", ["gemini", "openai", "anthropic"],
+        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude"}[x], horizontal=True)
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
-        gemini_key = st.text_input("Gemini API Key", type="password",
-                                   value=os.environ.get("GEMINI_API_KEY", ""))
+        gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
         st.session_state["gemini_api_key"] = gemini_key
     elif provider == "openai":
         model = st.selectbox("모델", OPENAI_MODELS, index=0)
-        openai_key = st.text_input("OpenAI API Key", type="password",
-                                   value=os.environ.get("OPENAI_API_KEY", ""))
+        openai_key = st.text_input("OpenAI API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
         st.session_state["openai_api_key"] = openai_key
     else:
         model = st.selectbox("모델", CLAUDE_MODELS, index=0)
-        anthropic_key = st.text_input("Anthropic API Key", type="password",
-                                      value=os.environ.get("ANTHROPIC_API_KEY", ""))
+        anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
         st.session_state["anthropic_api_key"] = anthropic_key
 
     st.markdown("---")
@@ -385,35 +255,26 @@ with st.sidebar:
     auto_pos = st.checkbox("정답 품사 자동 로테이션", value=True)
     manual_pos = "verb"
     if not auto_pos:
-        manual_pos = st.selectbox(
-            "정답 품사 고정", POS_ROTATION,
-            format_func=lambda x: POS_KOR[x],
-        )
+        manual_pos = st.selectbox("정답 품사 고정", POS_ROTATION, format_func=lambda x: POS_KOR[x])
     batch_n = st.number_input("한 번에 만들 문제 수", 1, 10, 1)
+    parallel_mode = st.checkbox("병렬 생성 (배치 시 빠름)", value=True,
+        help="여러 개를 한 번에 만들 때 동시에 호출해서 5~10배 빠름. 단 같은 단어가 정답으로 겹칠 수 있어요(자동 제외).")
 
-# ---------- 헤로 ----------
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown(
-    "<div class='hero-sub'>한 지문 · 무한히 비틀기 — Gemini · GPT · Claude 통합 어휘 문제 생성기</div>",
-    unsafe_allow_html=True,
-)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — Gemini · GPT · Claude 통합 어휘 문제 생성기</div>", unsafe_allow_html=True)
 
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
 if "last_results" not in st.session_state:
     st.session_state.last_results = []
 
-user_input = st.text_area(
-    "영어 지문", height=220,
-    value=st.session_state.current_text,
-    placeholder="여기에 영어 지문을 붙여 넣으세요...",
-)
+user_input = st.text_area("영어 지문", height=220, value=st.session_state.current_text,
+    placeholder="여기에 영어 지문을 붙여 넣으세요...")
 
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
 
-# ---------- 메트릭 ----------
 if user_input.strip():
     existing = questions_for_text(user_input)
     used_targets = [q.get("original_word", "?") for q in existing]
@@ -422,21 +283,15 @@ if user_input.strip():
 
     metric_html = (
         "<div class='metric-row'>"
-        "<div class='metric'><div class='label'>이 지문 누적</div>"
-        "<div class='value'>" + str(len(existing)) + "개</div></div>"
-        "<div class='metric'><div class='label'>다음 정답 품사</div>"
-        "<div class='value'>" + pos_label + "</div></div>"
-        "<div class='metric'><div class='label'>회피 단어 수</div>"
-        "<div class='value'>" + str(len(used_targets)) + "</div></div>"
+        "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
+        "<div class='metric'><div class='label'>다음 정답 품사</div><div class='value'>" + pos_label + "</div></div>"
+        "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
         "</div>"
     )
     st.markdown(metric_html, unsafe_allow_html=True)
 
     if used_targets:
-        st.markdown(
-            "<div class='small-dim' style='margin-top:0.6rem'>이전 정답 단어:</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답 단어:</div>", unsafe_allow_html=True)
         chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
         st.markdown(chips, unsafe_allow_html=True)
 
@@ -480,18 +335,24 @@ def make_one(text):
     raise RuntimeError("생성 실패: " + str(last_err))
 
 
-def render_loading(placeholder, current, total, provider_name):
+def render_loading(placeholder, current, total, provider_name, mode_label=""):
+    sub = provider_name.upper() + " · " + str(current) + " / " + str(total)
+    if mode_label:
+        sub = provider_name.upper() + " · " + mode_label
+    hint = "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>한 문제당 보통 8~15초 걸려요</div>"
     overlay_html = (
-        "<div class='loading-overlay'>"
-        "<div class='loading-box'>"
+        "<div class='loading-overlay'><div class='loading-box'>"
         "<div class='spinner'></div>"
         "<div class='loading-title'>문제를 만들고 있어요</div>"
-        "<div class='loading-sub'>"
-        + provider_name.upper() + " · " + str(current) + " / " + str(total)
-        + " <span class='loading-dots'></span>"
-        "</div></div></div>"
+        "<div class='loading-sub'>" + sub + " <span class='loading-dots'></span></div>"
+        + hint +
+        "</div></div>"
     )
     placeholder.markdown(overlay_html, unsafe_allow_html=True)
+
+
+def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys):
+    return generate_one_raw(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys)
 
 
 if btn_one or btn_batch:
@@ -502,13 +363,62 @@ if btn_one or btn_batch:
         loader = st.empty()
         ok = 0
         errors = []
-        for i in range(n):
-            render_loading(loader, i + 1, n, provider)
-            try:
-                make_one(user_input)
+
+        api_keys_snapshot = {
+            "gemini": st.session_state.get("gemini_api_key", ""),
+            "openai": st.session_state.get("openai_api_key", ""),
+            "anthropic": st.session_state.get("anthropic_api_key", ""),
+        }
+
+        if n > 1 and parallel_mode:
+            render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
+            prev_snapshot = previous_targets(user_input)
+            focus_default = pick_focus_pos(user_input) if auto_pos else manual_pos
+
+            tasks_focus = []
+            for i in range(n):
+                if auto_pos:
+                    tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
+                else:
+                    tasks_focus.append(manual_pos)
+
+            results = []
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
+                futures = {
+                    ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
+                              provider, model, api_keys_snapshot): i for i in range(n)
+                }
+                for f in concurrent.futures.as_completed(futures):
+                    try:
+                        results.append(f.result())
+                    except Exception as e:
+                        errors.append(str(e))
+
+            seen = {t.lower() for t in prev_snapshot}
+            for r in results:
+                ow = (r.get("original_word") or "").strip().lower()
+                if not ow:
+                    errors.append("original_word 누락")
+                    continue
+                if ow in seen:
+                    errors.append("중복 정답으로 제외: " + ow)
+                    continue
+                seen.add(ow)
+                r["original_text"] = user_input.strip()
+                r["_provider"] = provider
+                r["_model"] = model
+                save_question(r)
+                st.session_state.last_results.append(r)
                 ok += 1
-            except Exception as e:
-                errors.append(str(e))
+        else:
+            for i in range(n):
+                render_loading(loader, i + 1, n, provider)
+                try:
+                    make_one(user_input)
+                    ok += 1
+                except Exception as e:
+                    errors.append(str(e))
+
         loader.empty()
         if ok:
             st.success(str(ok) + "개 문제 생성 완료 (saved_questions.json 저장)")
@@ -517,7 +427,7 @@ if btn_one or btn_batch:
                 for e in errors:
                     st.write("- " + e)
 
-# ---------- 결과 카드 ----------
+
 def render_question_card(idx, r):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
@@ -527,18 +437,12 @@ def render_question_card(idx, r):
         "<span class='chip'>" + pos + "</span>"
         "<span class='chip'>정답 " + ans + "번</span>"
     )
-    st.markdown(
-        "<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
     qtext = r.get("question_text", "")
     st.markdown("<div class='q-card'>" + qtext + "</div>", unsafe_allow_html=True)
     with st.expander("정답 · 해설"):
         st.markdown("**정답:** " + ans + "번")
-        st.markdown(
-            "**원래 단어:** `" + str(r.get("original_word", "?")) + "` → "
-            "**변형:** `" + str(r.get("modified_word", "?")) + "`"
-        )
+        st.markdown("**원래 단어:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
         st.markdown("**품사:** " + pos)
         st.markdown("**해설:** " + str(r.get("explanation", "")))
 
@@ -549,7 +453,6 @@ if st.session_state.last_results:
     for idx, r in enumerate(st.session_state.last_results, start=1):
         render_question_card(idx, r)
 
-# ---------- 누적 ----------
 if user_input.strip():
     saved = questions_for_text(user_input)
     if saved:
@@ -565,24 +468,15 @@ if user_input.strip():
                     + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?"))
                 )
                 st.markdown(meta)
-                st.markdown(
-                    "<div class='q-card' style='margin-bottom:0.6rem'>"
-                    + q.get("question_text", "") + "</div>",
-                    unsafe_allow_html=True,
-                )
+                st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
                 st.caption(q.get("explanation", ""))
 
-# ---------- 드라이브 ----------
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
     drv = st.button("☁️ 드라이브 백업")
 with cdrv2:
-    st.markdown(
-        "<div class='small-dim' style='padding-top:0.5rem'>"
-        "saved_questions.json 을 구글 드라이브로 업로드합니다.</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
 if drv:
     if os.path.exists(SAVE_FILE):
         try:
