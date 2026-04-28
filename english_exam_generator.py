@@ -1,3 +1,257 @@
+"""Word Twist - 고등 영어 어휘/어법 문맥 문제 출제기"""
+import streamlit as st
+import json
+import os
+import re
+import concurrent.futures
+
+import google.generativeai as genai
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+try:
+    import anthropic
+except Exception:
+    anthropic = None
+
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SAVE_FILE = "saved_questions.json"
+POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
+POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
+
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
+OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+
+
+def load_all_questions():
+    if not os.path.exists(SAVE_FILE):
+        return []
+    try:
+        with open(SAVE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_question(data):
+    fd = load_all_questions()
+    fd.append(data)
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(fd, f, ensure_ascii=False, indent=4)
+
+
+def questions_for_text(text):
+    t = text.strip()
+    return [i for i in load_all_questions() if i.get("original_text", "").strip() == t]
+
+
+def previous_targets(text):
+    return [i.get("original_word", "") for i in questions_for_text(text) if i.get("original_word")]
+
+
+def previous_pos(text):
+    return [i.get("answer_pos", "") for i in questions_for_text(text) if i.get("answer_pos")]
+
+
+def previous_choice_words(text):
+    words = set()
+    for q in questions_for_text(text):
+        qt = q.get("question_text", "")
+        for m in re.findall(r"<u>(.*?)</u>", qt, flags=re.IGNORECASE | re.DOTALL):
+            w = m.strip()
+            if w:
+                words.add(w)
+    return sorted(words)
+
+
+def pick_focus_pos(text):
+    history = previous_pos(text)
+    if not history:
+        return POS_ROTATION[0]
+    counts = {p: history.count(p) for p in POS_ROTATION}
+    mn = min(counts.values())
+    cands = [p for p in POS_ROTATION if counts[p] == mn]
+    for p in POS_ROTATION:
+        if p in cands and history[-1] != p:
+            return p
+    return cands[0]
+
+
+def call_llm(provider, model, prompt, api_keys):
+    if provider == "gemini":
+        genai.configure(api_key=api_keys.get("gemini", ""))
+        return genai.GenerativeModel(model).generate_content(prompt).text
+    if provider == "openai":
+        if OpenAI is None:
+            raise RuntimeError("pip install openai 필요")
+        c = OpenAI(api_key=api_keys.get("openai", ""))
+        r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
+        return r.choices[0].message.content
+    if provider == "anthropic":
+        if anthropic is None:
+            raise RuntimeError("pip install anthropic 필요")
+        c = anthropic.Anthropic(api_key=api_keys.get("anthropic", ""))
+        r = c.messages.create(model=model, max_tokens=4096, messages=[{"role": "user", "content": prompt}])
+        return r.content[0].text
+    raise ValueError("unknown provider: " + str(provider))
+
+
+def build_prompt(text, prev_targets, focus_pos=None, prev_choices=None):
+    avoid_part = ""
+    if prev_targets:
+        avoid_part = "\n[중복 절대 금지] 아래 단어들은 이전 정답으로 사용됨. 다시 쓰지 마라: " + ", ".join(prev_targets)
+    if prev_choices:
+        avoid_part += "\n[다양성 힌트] 이전 보기 단어: " + ", ".join(prev_choices) + " — 가능하면 이번엔 다른 단어를 골라라."
+
+    if focus_pos:
+        pos_kor = POS_KOR[focus_pos]
+        pos_rule = "5. 이번 정답 타겟 품사는 반드시 " + pos_kor + " (" + focus_pos + ") 다."
+        pos_field = focus_pos
+    else:
+        pos_rule = "5. 정답(변형할 1개)은 동사/형용사/부사/접속사 중 가장 함정성 높은 단어를 자유롭게 골라라. 한 품사에 치우치지 말고 매번 다른 품사를 선택해도 좋다."
+        pos_field = "verb 또는 adjective 또는 adverb 또는 conjunction 중 실제 변형한 품사"
+
+    template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어휘 문제 전문가다.
+'문맥상 낱말의 쓰임이 적절하지 않은 것은?' 문제를 만든다.
+
+[난이도] 대한민국 고2~고3 상위권 / 수능·모의고사 수준.
+
+[보기 선정]
+1. 5개 보기는 형용사/동사/접속사/부사 중에서만 (명사·전치사·관사 금지).
+2. 4개 품사가 골고루 섞이게 (예: 동사2 + 형용사1 + 부사1 + 접속사1).
+3. 5개 모두 문맥 흐름을 결정짓는 핵심 단어.
+4. 보기 단어 앞에 (1)~(5) 번호 + HTML <u>단어</u> 태그.
+
+[정답 변형]
+__POS_RULE__
+6. 원문을 반의어/정반대 의미 단어로 교체 (품사는 동일).
+7. 문법은 자연스럽지만 문맥상 명백히 어긋나야 함.
+8. 나머지 4개는 원문 그대로.
+
+[전체 흐름]
+9. 변형 1개 외 지문 내용·논리·구조는 원문과 100% 동일.
+__AVOID__
+
+[출력] 마크다운 코드블록 없이 순수 JSON만:
+{
+    "question_text": "(<u>(1) word</u> 형태 5개 포함된 영어 지문 전문)",
+    "answer": 1,
+    "original_word": "변형 전 원래 단어",
+    "modified_word": "변형 후 들어간 단어",
+    "answer_pos": "__POS_FIELD__",
+    "explanation": "왜 부적절한지 한국어 2~3문장"
+}
+
+원문:
+\"\"\"
+__TEXT__
+\"\"\"
+"""
+    return (template
+            .replace("__POS_RULE__", pos_rule)
+            .replace("__POS_FIELD__", pos_field)
+            .replace("__AVOID__", avoid_part)
+            .replace("__TEXT__", text))
+
+
+def build_grammar_prompt(text, prev_targets, prev_choices=None):
+    avoid_part = ""
+    if prev_targets:
+        avoid_part = "\n[중복 금지] 이전 정답 어법 포인트: " + ", ".join(prev_targets) + " — 다시 쓰지 마라."
+    if prev_choices:
+        avoid_part += "\n[다양성 힌트] 이전 보기 부분: " + ", ".join(prev_choices) + " — 가능하면 다른 부분을 골라라."
+
+    template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어법 문제 전문가다.
+'다음 글의 밑줄 친 부분 중, 어법상 틀린 것은?' 문제를 만든다.
+
+[난이도] 대한민국 고2~고3 상위권 / 수능·모의고사 어법 수준.
+
+[보기 선정 - 어법 카테고리]
+1. 5개 보기는 다음 카테고리 중 5개 서로 다른 카테고리에서 1개씩:
+   (a) 동사 형태/시제 (b) 능동/수동 (c) 분사구문/현재분사 vs 과거분사
+   (d) 관계대명사 vs 관계부사 vs 의문사 (e) to부정사 vs 동명사
+   (f) 형용사 vs 부사 (g) 단수/복수 수일치 (h) 병렬 구조
+   (i) 접속사 vs 전치사 (j) 도치/강조구문/비교급
+2. 보기는 단어 1개가 아니라 2~4 단어 구 단위로 (예: "to study", "having seen", "which is").
+3. 5개 모두 실제 어법 포인트가 되는 부분.
+4. 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
+
+[정답 변형]
+5. 5개 중 1개를 어법상 틀리게 변형 (의미는 그대로, 어법만 틀리게).
+6. 나머지 4개는 어법상 정확한 원문 그대로.
+
+[전체 흐름]
+7. 변형 1곳 외 지문 전체는 원문과 100% 동일.
+__AVOID__
+
+[출력] 마크다운 코드블록 없이 순수 JSON만:
+{
+    "question_text": "(<u>(1) 부분</u> 형태 5개 포함된 영어 지문 전문)",
+    "answer": 1,
+    "original_word": "변형 전 원래 어법 형태",
+    "modified_word": "변형 후 어법상 틀린 형태",
+    "answer_pos": "어법 카테고리 (예: 관계사, 분사, 수일치, 시제, 능수동 등)",
+    "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
+}
+
+원문:
+\"\"\"
+__TEXT__
+\"\"\"
+"""
+    return template.replace("__AVOID__", avoid_part).replace("__TEXT__", text)
+
+
+def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None):
+    if q_type == "grammar":
+        prompt = build_grammar_prompt(text, prev_targets, prev_choices)
+    else:
+        prompt = build_prompt(text, prev_targets, focus_pos, prev_choices)
+    raw = call_llm(provider, model, prompt, api_keys)
+    cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
+    s = cleaned.find("{")
+    e = cleaned.rfind("}")
+    if s != -1 and e != -1:
+        cleaned = cleaned[s:e + 1]
+    return json.loads(cleaned)
+
+
+def get_drive_service():
+    creds = None
+    if os.path.exists('token.json'):
+        creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            if os.path.exists('credentials.json'):
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+            else:
+                st.error("credentials.json 파일이 필요합니다.")
+                return None
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+    return build('drive', 'v3', credentials=creds)
+
+
+def upload_to_drive(path):
+    s = get_drive_service()
+    if not s:
+        return None
+    media = MediaFileUpload(path, mimetype='application/json')
+    f = s.files().create(body={'name': os.path.basename(path)}, media_body=media, fields='id').execute()
+    return f.get('id')
+
+
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
