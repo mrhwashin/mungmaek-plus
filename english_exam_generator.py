@@ -436,15 +436,15 @@ with st.sidebar:
         if target_id is None:
             st.session_state.selected_passage_id = None
             st.session_state.current_text = ""
+            st.session_state["text_area"] = ""
         else:
             p = get_passage_by_id(target_id)
             if p:
                 st.session_state.selected_passage_id = target_id
                 st.session_state.current_text = p["text"]
+                # text_area widget의 키 값을 직접 설정
+                st.session_state["text_area"] = p["text"]
         st.session_state.last_results = []
-        # text_area widget의 내부 키도 초기화
-        if "text_area" in st.session_state:
-            del st.session_state["text_area"]
         st.rerun()
 
     # 새 지문 저장
@@ -470,8 +470,7 @@ with st.sidebar:
             st.session_state.current_text = ""
             st.session_state.last_results = []
             st.session_state.passage_select_label = "(직접 입력)"
-            if "text_area" in st.session_state:
-                del st.session_state["text_area"]
+            st.session_state["text_area"] = ""
             st.success("지문이 삭제되었습니다.")
             st.rerun()
 
@@ -489,10 +488,13 @@ if st.session_state.selected_passage_id:
             unsafe_allow_html=True,
         )
 
+# text_area는 key로만 제어 (value 파라미터를 함께 쓰면 충돌)
+if "text_area" not in st.session_state:
+    st.session_state["text_area"] = st.session_state.current_text
+
 user_input = st.text_area(
     "영어 지문",
     height=220,
-    value=st.session_state.current_text,
     placeholder="여기에 영어 지문을 붙여 넣으세요...",
     key="text_area",
 )
