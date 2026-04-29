@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (DeepSeek 포함, 어법 카테고리 확장)"""
+"""Word Twist - 지문·문제 누적 저장소 (DeepSeek 포함)"""
 import streamlit as st
 import json
 import os
@@ -30,11 +30,28 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
 
+# 어법 카테고리 (수능 어법 교재 기준 확장)
 GRAMMAR_CATEGORIES = [
-    "주어동사_수일치", "시제", "능동수동", "조동사_가정법", "to부정사_동명사",
-    "분사_분사구문", "현재분사_과거분사", "형용사_부사", "비교구문", "명사_대명사",
-    "재귀대명사", "관계대명사", "관계부사", "what_which_that_whose", "접속사_전치사",
-    "병렬구조", "도치", "강조구문", "어순", "5형식_보어",
+    "주어동사_수일치",
+    "시제",
+    "능동수동",
+    "조동사_가정법",
+    "to부정사_동명사",
+    "분사_분사구문",
+    "현재분사_과거분사",
+    "형용사_부사",
+    "비교구문",
+    "명사_대명사",
+    "재귀대명사",
+    "관계대명사",
+    "관계부사",
+    "what_which_that_whose",
+    "접속사_전치사",
+    "병렬구조",
+    "도치",
+    "강조구문",
+    "어순",
+    "5형식_보어",
 ]
 
 GRAMMAR_HINTS = {
@@ -59,13 +76,13 @@ GRAMMAR_HINTS = {
     "어순": "간접의문문 어순 (의문사+S+V vs 의문사+V+S) 위반.",
     "5형식_보어": "지각·사역동사 보어 형태 (see/hear/feel/make/let + 원형/V-ing/p.p.).",
 }
-
-GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
 
+# ==================== 지문 관리 ====================
 def now_iso():
     return datetime.datetime.now().isoformat()
 
@@ -118,6 +135,7 @@ def get_passage_by_id(passage_id):
     return None
 
 
+# ==================== 문제 저장/로드 ====================
 def load_all_questions():
     if not os.path.exists(SAVE_FILE):
         return []
@@ -173,6 +191,7 @@ def pick_focus_pos(text):
 
 
 def previous_grammar_categories(text):
+    """이전 어법 문제에서 사용된 카테고리 (answer_pos 필드를 활용)"""
     cats = []
     for q in questions_for_text(text):
         if q.get("_q_type") == "grammar":
@@ -183,19 +202,22 @@ def previous_grammar_categories(text):
 
 
 def pick_grammar_category(text):
+    """가장 적게 쓰인 어법 카테고리 우선 + 직전과 다른 것"""
     import random
     history = previous_grammar_categories(text)
     if not history:
-        return random.choice(GRAMMAR_CATEGORIES[:8])
+        return random.choice(GRAMMAR_CATEGORIES[:8])  # 처음엔 흔한 카테고리부터
     counts = {c: history.count(c) for c in GRAMMAR_CATEGORIES}
     mn = min(counts.values())
     cands = [c for c in GRAMMAR_CATEGORIES if counts[c] == mn]
+    # 직전과 다른 것 우선
     last = history[-1] if history else None
     cands_diff = [c for c in cands if c != last]
     pool = cands_diff if cands_diff else cands
     return random.choice(pool)
 
 
+# ==================== LLM 호출 ====================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
         genai.configure(api_key=api_keys.get("gemini", ""))
@@ -221,6 +243,7 @@ def call_llm(provider, model, prompt, api_keys):
     raise ValueError("unknown provider: " + str(provider))
 
 
+# ==================== 프롬프트 빌더 ====================
 def build_prompt(text, prev_targets, focus_pos=None, prev_choices=None):
     avoid_part = ""
     if prev_targets:
@@ -291,7 +314,8 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
         hint = GRAMMAR_HINTS.get(focus_category, "")
         cat_block = (
             "\n[★ 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 다 ★]\n"
-            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. 다른 카테고리는 절대 정답으로 만들지 마라.\n"
+            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. "
+            "다른 카테고리는 절대 정답으로 만들지 마라.\n"
             "이 카테고리 함정 패턴 가이드: " + hint + "\n"
             "이 함정을 자연스럽게 지문 안에 녹여서 출제하라.\n"
         )
@@ -309,7 +333,7 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [보기 선정 규칙]
 1. 5개 보기는 위 풀에서 **서로 다른 5가지 카테고리**에서 하나씩 선택. 같은 카테고리 두 번 금지.
-2. 보기는 단어 1개가 아니라 2~5 단어 구 단위로.
+2. 보기는 단어 1개가 아니라 2~5 단어 구 단위로 (예: "to study", "having seen", "which is", "the more important").
 3. 5개 모두 실제 어법 포인트가 되는 부분이어야 한다.
 4. 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
 __CAT_BLOCK__
@@ -327,7 +351,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 어법 형태",
     "modified_word": "변형 후 어법상 틀린 형태",
-    "answer_pos": "정답이 속한 카테고리 정확한 이름",
+    "answer_pos": "정답이 속한 카테고리 정확한 이름 (예: 관계대명사, 분사_분사구문, 수일치 등)",
     "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
 }
 
@@ -343,6 +367,7 @@ __TEXT__
 
 
 def build_analysis_prompt(text):
+    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해 + 자연 해석"""
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
@@ -350,19 +375,30 @@ def build_analysis_prompt(text):
 각 문장마다 아래 4가지를 출력한다.
 
 1. original: 영어 원문 그대로 (한 문장씩)
-2. annotated: 영어 원문에 어구 단위로 인라인 주석
-   - 형식: "어구⟦성분·품사⟧ 어구⟦성분·품사⟧ ..."
-   - 성분 약어: S(주어), V(동사), O(목적어), C(주격보어), OC(목적격보어), M(수식어/부사구), Conj(접속사)
-   - 품사: 명사구, 동사, 형용사, 부사, 전치사구, 분사구문, to부정사, 관계절, 종속절 등
-   - 예: "Good thinkers⟦S·명사구⟧ rarely⟦M·부사⟧ limit⟦V·타동사⟧ themselves⟦O·재귀대명사⟧"
-3. literal: 직독직해 — 영어 어구 순서 그대로 한국어로 끊어서 슬래시(/)로 구분
-4. translation: 자연스러운 한국어 의역 (한 문장)
+
+2. annotated: 영어 원문에 어구 단위로 인라인 주석과 끊어읽기 슬래시(/) 추가
+   - 형식: "어구⟦성분·품사⟧ / 어구⟦성분·품사⟧ / ..."
+   - 반드시 literal(직독직해)의 끊어읽기 단위와 일치하도록 영어 어구 사이에도 슬래시(/)를 넣을 것.
+   - 문장 성분 약어 사용: S(주어), V(동사), O(목적어), C(주격보어), OC(목적격보어), M(수식어/부사구), Conj(접속사)
+   - 품사도 같이 표기: 명사구, 동사, 형용사, 부사, 전치사구, 분사구문, to부정사, 관계절, 종속절 등
+   - 예시: "Good thinkers⟦S·명사구⟧ / rarely⟦M·부사⟧ / limit⟦V·타동사⟧ / themselves⟦O·재귀대명사⟧ / to a single way⟦M·전치사구⟧ / of understanding the world⟦M·전치사구·동명사⟧."
+
+3. literal: 직독직해 — 영어 어구 순서 그대로 한국어로 끊어서 번역
+   - annotated의 영어 어구 단위와 완벽히 1:1 대응되도록 슬래시(/)로 구분
+   - 예시: "좋은 사상가들은 / 거의 ~하지 않는다 / 자신을 가두지 / 한 가지 방식에 / 세상을 이해하는"
+
+4. translation: 자연스러운 한국어 해석 (의역, 한 문장)
+   - 예시: "훌륭한 사상가들은 세상을 이해하는 한 가지 방식에만 자신을 가두지 않는다."
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
   "sentences": [
-    {"original": "...", "annotated": "...", "literal": "...", "translation": "..."},
-    ...
+    {
+      "original": "...",
+      "annotated": "...",
+      "literal": "...",
+      "translation": "..."
+    }
   ]
 }
 
@@ -398,6 +434,7 @@ def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q
     return json.loads(cleaned)
 
 
+# ==================== 구글 드라이브 ====================
 def get_drive_service():
     creds = None
     if os.path.exists('token.json'):
@@ -426,6 +463,7 @@ def upload_to_drive(path):
     return f.get('id')
 
 
+# ==================== Streamlit UI ====================
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
 CSS = """
@@ -460,14 +498,17 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .loading-sub { color: #cbd5e1; font-size: 0.95rem; }
 .loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
 @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
+
+/* 지문 분석 스타일 */
 .sent-block { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
 .sent-num { display: inline-block; padding: 2px 10px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #ec4899); color:#fff; font-size: 0.75rem; font-weight: 700; margin-bottom: 10px; }
 .sent-original { color:#e5e7eb; font-size: 1rem; line-height:1.7; margin-bottom: 12px; font-weight: 500; }
 .sent-row { color:#cbd5e1; font-size: 0.93rem; line-height: 1.85; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
 .sent-row .lbl { color: #c084fc; font-weight: 700; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-right: 8px; }
-.sent-row.literal { color: #fbcfe8; }
+.sent-row.literal { color: #fbcfe8; font-family: "Pretendard", sans-serif; }
 .sent-row.translation { color: #f5f3ff; font-size: 0.97rem; }
 .sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.0; word-spacing: 2px; }
+.sent-annotated .anno { display: inline-block; margin: 0 1px; padding: 0; }
 .tag-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; margin-left: 2px; vertical-align: 1px; letter-spacing: 0.02em; }
 .tag-S  { background: rgba(59,130,246,0.25); color: #93c5fd; border: 1px solid rgba(59,130,246,0.4); }
 .tag-V  { background: rgba(236,72,153,0.25); color: #f9a8d4; border: 1px solid rgba(236,72,153,0.4); }
@@ -475,11 +516,13 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .tag-C  { background: rgba(234,179,8,0.25);  color: #fde68a; border: 1px solid rgba(234,179,8,0.4); }
 .tag-OC { background: rgba(249,115,22,0.25); color: #fdba74; border: 1px solid rgba(249,115,22,0.4); }
 .tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
+.chunk-sep { color: #ec4899; font-weight: 700; margin: 0 6px; opacity: 0.6; font-size: 0.95rem; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
 
+# ---------- 세션 상태 초기화 ----------
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
 if "last_results" not in st.session_state:
@@ -490,6 +533,7 @@ if "passage_select_label" not in st.session_state:
     st.session_state.passage_select_label = "(직접 입력)"
 
 
+# ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
     provider = st.radio("Provider", ["gemini", "openai", "anthropic", "deepseek"],
@@ -535,13 +579,20 @@ with st.sidebar:
         label_to_id[label] = p["id"]
     passage_options = list(label_to_id.keys())
 
+    # 현재 선택된 라벨 인덱스 찾기
     current_label = st.session_state.passage_select_label
     if current_label not in passage_options:
         current_label = "(직접 입력)"
     current_idx = passage_options.index(current_label)
 
-    new_label = st.selectbox("저장된 지문 불러오기", passage_options, index=current_idx, key="passage_selector")
+    new_label = st.selectbox(
+        "저장된 지문 불러오기",
+        passage_options,
+        index=current_idx,
+        key="passage_selector",
+    )
 
+    # 선택 변경 감지: 선택이 바뀌었으면 즉시 적용 + rerun
     if new_label != st.session_state.passage_select_label:
         st.session_state.passage_select_label = new_label
         target_id = label_to_id[new_label]
@@ -554,10 +605,12 @@ with st.sidebar:
             if p:
                 st.session_state.selected_passage_id = target_id
                 st.session_state.current_text = p["text"]
+                # text_area widget의 키 값을 직접 설정
                 st.session_state["text_area"] = p["text"]
         st.session_state.last_results = []
         st.rerun()
 
+    # 새 지문 저장
     new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
     if st.button("💾 현재 지문 저장"):
         if not new_title.strip():
@@ -585,30 +638,46 @@ with st.sidebar:
             st.rerun()
 
 
+# ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
 
+# 현재 지문 상태 배지
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
     if cur_p:
-        st.markdown("<span class='chip chip-success'>✓ 지문 불러옴: " + cur_p["title"] + "</span>", unsafe_allow_html=True)
+        st.markdown(
+            "<span class='chip chip-success'>✓ 지문 불러옴: " + cur_p["title"] + "</span>",
+            unsafe_allow_html=True,
+        )
 
+# text_area는 key로만 제어 (value 파라미터를 함께 쓰면 충돌)
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
 
-user_input = st.text_area("영어 지문", height=220, placeholder="여기에 영어 지문을 붙여 넣으세요...", key="text_area")
+user_input = st.text_area(
+    "영어 지문",
+    height=220,
+    placeholder="여기에 영어 지문을 붙여 넣으세요...",
+    key="text_area",
+)
 
+# 텍스트 변경 감지
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
+    # 분석 결과 초기화
     if "analysis_result" in st.session_state:
         del st.session_state["analysis_result"]
+    # 수동 변경이면 보관함 연결 해제
     if st.session_state.selected_passage_id:
         st.session_state.selected_passage_id = None
         st.session_state.passage_select_label = "(직접 입력)"
 
+# 탭 구분
 tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
 
+# =============== TAB Q: 문제 생성 ===============
 with tab_q:
     if user_input.strip():
         existing = questions_for_text(user_input)
@@ -644,6 +713,7 @@ with tab_q:
         btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에", key="btn_batch_q")
 
 
+# ---------- 문제 생성 로직 ----------
 def make_one(text):
     prev_t = previous_targets(text)
     prev_c = previous_choice_words(text)
@@ -653,6 +723,7 @@ def make_one(text):
         focus = pick_focus_pos(text)
     else:
         focus = manual_pos
+    # 어법 모드면 카테고리 자동 선정
     grammar_cat = None
     if q_type == "grammar":
         grammar_cat = pick_grammar_category(text)
@@ -666,7 +737,8 @@ def make_one(text):
     for attempt in range(4):
         try:
             result = generate_one_raw(text, prev_t, focus, provider, model, api_keys,
-                                       q_type=q_type, prev_choices=prev_c, focus_category=grammar_cat)
+                                       q_type=q_type, prev_choices=prev_c,
+                                       focus_category=grammar_cat)
         except Exception as e:
             last_err = e
             continue
@@ -743,11 +815,13 @@ with tab_q:
                 else:
                     tasks_focus = [manual_pos] * n
 
+                # 어법 모드면 카테고리도 N개 분배
                 tasks_grammar_cat = []
                 if q_type == "grammar":
                     grammar_history = previous_grammar_categories(user_input)
                     counts = {c: grammar_history.count(c) for c in GRAMMAR_CATEGORIES}
                     sorted_cats = sorted(GRAMMAR_CATEGORIES, key=lambda c: counts[c])
+                    # 가장 적게 쓰인 순으로 N개 선정
                     tasks_grammar_cat = sorted_cats[:n]
                 else:
                     tasks_grammar_cat = [None] * n
@@ -802,6 +876,7 @@ with tab_q:
                         st.write("- " + e)
 
 
+# ---------- 결과 표시 ----------
 def render_question_card(idx, r):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
@@ -845,9 +920,12 @@ with tab_q:
                     st.caption(q.get("explanation", ""))
 
 
+# ============= TAB A: 지문 분석 =============
 def render_annotated_html(annotated):
+    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 슬래시를 디자인 요소로 변환"""
     def repl(m):
         full = m.group(1).strip()
+        # 첫 토큰이 성분(S/V/O/C/OC/M/Conj 등)
         parts = full.split("·", 1)
         comp = parts[0].strip()
         pos = parts[1].strip() if len(parts) > 1 else ""
@@ -867,13 +945,20 @@ def render_annotated_html(annotated):
             chip += "·" + pos
         chip += "</span>"
         return chip
-    return re.sub(r"⟦(.*?)⟧", repl, annotated)
+        
+    # 1. ⟦성분·품사⟧ 태그 변환
+    html = re.sub(r"⟦(.*?)⟧", repl, annotated)
+    # 2. 슬래시(/)를 chunk-sep span으로 감싸기 (주변 공백 정리 포함)
+    html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", html)
+    
+    return html
 
 
 with tab_a:
     if not user_input.strip():
         st.info("영어 지문을 입력하면 분석을 시작할 수 있어요.")
     else:
+        # 분석 캐시 확인
         cached = st.session_state.get("analysis_result")
         cached_for = st.session_state.get("analysis_for_text", "")
 
@@ -911,6 +996,7 @@ with tab_a:
             finally:
                 loader.empty()
 
+        # 캐시 표시 (지문이 바뀌면 표시 안 함)
         if cached and cached_for == user_input:
             sentences = cached.get("sentences", [])
             if not sentences:
@@ -919,6 +1005,7 @@ with tab_a:
                 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
                 st.markdown("### 📖 분석 결과 (" + str(len(sentences)) + "개 문장)")
 
+                # 성분 범례
                 legend = (
                     "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af'>"
                     "<span class='tag-chip tag-S'>S 주어</span> "
@@ -947,6 +1034,7 @@ with tab_a:
                     st.markdown(block, unsafe_allow_html=True)
 
 
+# ---------- 드라이브 백업 ----------
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
