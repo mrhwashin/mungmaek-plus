@@ -954,6 +954,18 @@ def render_annotated_html(annotated):
     
     return html
 
+def render_chunked_original(annotated, original):
+    """annotated 텍스트에서 ⟦성분⟧ 태그만 제거하고 슬래시는 살려서 원문을 재구성"""
+    if not annotated:
+        return original
+    # 1. ⟦ ⟧ 안의 내용물 제거
+    clean_text = re.sub(r"⟦.*?⟧", "", annotated)
+    if not clean_text.strip():
+        return original
+    # 2. 슬래시 디자인 적용
+    html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", clean_text.strip())
+    return html
+
 
 with tab_a:
     if not user_input.strip():
@@ -1021,10 +1033,12 @@ with tab_a:
 
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
+                    chunked_original = render_chunked_original(s.get("annotated", ""), s.get("original", ""))
+                    
                     block = (
                         "<div class='sent-block'>"
                         "<div class='sent-num'>문장 " + str(i) + "</div>"
-                        "<div class='sent-original'>" + s.get("original", "") + "</div>"
+                        "<div class='sent-original'>" + chunked_original + "</div>"
                         "<div class='sent-annotated'>" + annotated_html + "</div>"
                         "<div class='sent-row literal'><span class='lbl'>직독직해</span>"
                         + s.get("literal", "") + "</div>"
