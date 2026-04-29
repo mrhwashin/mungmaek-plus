@@ -29,7 +29,12 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
-GEMINI_MODELS = ["gemini-2.0-flash"]
+GRAMMAR_CATEGORIES = [
+    "동사 형태/시제", "능동/수동", "분사구문", "관계사/의문사",
+    "to부정사/동명사", "형용사/부사", "수일치", "병렬 구조",
+    "접속사/전치사", "도치/비교급"
+]
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
@@ -143,6 +148,19 @@ def pick_focus_pos(text):
     return cands[0]
 
 
+def pick_focus_grammar(text):
+    history = previous_pos(text)
+    if not history:
+        return GRAMMAR_CATEGORIES[0]
+    counts = {p: history.count(p) for p in GRAMMAR_CATEGORIES}
+    mn = min(counts.values())
+    cands = [p for p in GRAMMAR_CATEGORIES if counts[p] == mn]
+    for p in GRAMMAR_CATEGORIES:
+        if p in cands and history[-1] != p:
+            return p
+    return cands[0]
+
+
 # ==================== LLM 호출 ====================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
@@ -228,12 +246,16 @@ __TEXT__
             .replace("__TEXT__", text))
 
 
-def build_grammar_prompt(text, prev_targets, prev_choices=None):
+def build_grammar_prompt(text, prev_targets, focus_grammar=None, prev_choices=None):
     avoid_part = ""
     if prev_targets:
         avoid_part = "\n[중복 금지] 이전 정답 어법 포인트: " + ", ".join(prev_targets) + " — 다시 쓰지 마라."
     if prev_choices:
         avoid_part += "\n[다양성 힌트] 이전 보기 부분: " + ", ".join(prev_choices) + " — 가능하면 다른 부분을 골라라."
+
+    focus_rule = "5. 5개 중 1개를 어법상 틀리게 변형 (의미는 그대로, 어법만 틀리게)."
+    if focus_grammar:
+        focus_rule = "5. [중요] 정답(어법상 틀리게 변형할 1개)의 어법 포인트는 반드시 '" + focus_grammar + "' 관련이어야 한다."
 
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어법 문제 전문가다.
 '다음 글의 밑줄 친 부분 중, 어법상 틀린 것은?' 문제를 만든다.
@@ -242,16 +264,13 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None):
 
 [보기 선정 - 어법 카테고리]
 1. 5개 보기는 다음 카테고리 중 5개 서로 다른 카테고리에서 1개씩:
-   (a) 동사 형태/시제 (b) 능동/수동 (c) 분사구문/현재분사 vs 과거분사
-   (d) 관계대명사 vs 관계부사 vs 의문사 (e) to부정사 vs 동명사
-   (f) 형용사 vs 부사 (g) 단수/복수 수일치 (h) 병렬 구조
-   (i) 접속사 vs 전치사 (j) 도치/강조구문/비교급
+   (a) 동사 형태/시제 (b) 능동/수동 (c) 분사구문 (d) 관계사/의문사 (e) to부정사/동명사 (f) 형용사/부사 (g) 수일치 (h) 병렬 구조 (i) 접속사/전치사 (j) 도치/비교급
 2. 보기는 단어 1개가 아니라 2~4 단어 구 단위로.
 3. 5개 모두 실제 어법 포인트가 되는 부분.
 4. 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
 
 [정답 변형]
-5. 5개 중 1개를 어법상 틀리게 변형 (의미는 그대로, 어법만 틀리게).
+__FOCUS_RULE__
 6. 나머지 4개는 어법상 정확한 원문 그대로.
 
 [전체 흐름]
@@ -264,7 +283,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 어법 형태",
     "modified_word": "변형 후 어법상 틀린 형태",
-    "answer_pos": "어법 카테고리",
+    "answer_pos": "실제 정답에 사용된 어법 카테고리",
     "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
 }
 
@@ -273,7 +292,7 @@ __AVOID__
 __TEXT__
 \"\"\"
 """
-    return template.replace("__AVOID__", avoid_part).replace("__TEXT__", text)
+    return template.replace("__AVOID__", avoid_part).replace("__FOCUS_RULE__", focus_rule).replace("__TEXT__", text)
 
 
 def build_analysis_prompt(text):
@@ -333,7 +352,7 @@ def analyze_passage(text, provider, model, api_keys):
 
 def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None):
     if q_type == "grammar":
-        prompt = build_grammar_prompt(text, prev_targets, prev_choices)
+        prompt = build_grammar_prompt(text, prev_targets, focus_grammar=focus_pos, prev_choices=prev_choices)
     else:
         prompt = build_prompt(text, prev_targets, focus_pos, prev_choices)
     raw = call_llm(provider, model, prompt, api_keys)
@@ -627,12 +646,16 @@ with tab_q:
 def make_one(text):
     prev_t = previous_targets(text)
     prev_c = previous_choice_words(text)
-    if free_pos:
+    
+    if q_type == "grammar":
+        focus = pick_focus_grammar(text)
+    elif free_pos:
         focus = None
     elif auto_pos:
         focus = pick_focus_pos(text)
     else:
         focus = manual_pos
+        
     api_keys = {
         "gemini": st.session_state.get("gemini_api_key", ""),
         "openai": st.session_state.get("openai_api_key", ""),
@@ -710,7 +733,11 @@ with tab_q:
                 prev_choices_snap = previous_choice_words(user_input)
 
                 tasks_focus = []
-                if free_pos or q_type == "grammar":
+                if q_type == "grammar":
+                    focus_default = pick_focus_grammar(user_input)
+                    for i in range(n):
+                        tasks_focus.append(GRAMMAR_CATEGORIES[(GRAMMAR_CATEGORIES.index(focus_default) + i) % len(GRAMMAR_CATEGORIES)])
+                elif free_pos:
                     tasks_focus = [None] * n
                 elif auto_pos:
                     focus_default = pick_focus_pos(user_input)
