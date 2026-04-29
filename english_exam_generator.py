@@ -29,7 +29,7 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
-GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
+GEMINI_MODELS = ["gemini-2.0-flash"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
