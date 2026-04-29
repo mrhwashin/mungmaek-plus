@@ -61,7 +61,7 @@ GRAMMAR_HINTS = {
     "조동사_가정법": "가정법 if절-주절 동사 짝, should/would/could 시제 어긋나게.",
     "to부정사_동명사": "동명사만 받는 동사에 to부정사 (enjoy to do), 그 반대.",
     "분사_분사구문": "분사구문 주어와 본문 주어 불일치, 분사구문 형태 오류.",
-    "현재분사_과거분사": "능동의 V-ing vs 수동의 V-ed 혼동(boring vs bored).",
+    "현재분사_과거분사": "능동의 V-ing vs 수동의 부드러운 분사 혼동(boring vs bored).",
     "형용사_부사": "동사·형용사를 수식하는데 형용사 사용(부사가 와야 하는 자리).",
     "비교구문": "the 비교급, the 비교급 / as 원급 as / than 동사 일치 위반.",
     "명사_대명사": "단수/복수, 대명사 선행사 일치, it/them/its 혼동.",
@@ -946,10 +946,11 @@ def render_annotated_html(annotated):
         chip += "</span>"
         return chip
         
-    # 1. ⟦성분·품사⟧ 태그 변환
-    html = re.sub(r"⟦(.*?)⟧", repl, annotated)
-    # 2. 슬래시(/)를 chunk-sep span으로 감싸기 (주변 공백 정리 포함)
-    html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", html)
+    # 1. HTML 태그가 생성되기 전에 슬래시(/)를 먼저 치환 (</span> 내부 슬래시 치환 방지)
+    html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", annotated)
+    
+    # 2. ⟦성분·품사⟧ 태그 변환
+    html = re.sub(r"⟦(.*?)⟧", repl, html)
     
     return html
 
