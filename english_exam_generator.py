@@ -6,6 +6,7 @@ import re
 import uuid
 import datetime
 import concurrent.futures
+import threading
 
 import google.generativeai as genai
 try:
@@ -61,7 +62,7 @@ GRAMMAR_HINTS = {
     "조동사_가정법": "가정법 if절-주절 동사 짝, should/would/could 시제 어긋나게.",
     "to부정사_동명사": "동명사만 받는 동사에 to부정사 (enjoy to do), 그 반대.",
     "분사_분사구문": "분사구문 주어와 본문 주어 불일치, 분사구문 형태 오류.",
-    "현재분사_과거분사": "능동의 V-ing vs 수동의 부드러운 분사 혼동(boring vs bored).",
+    "현재분사_과거분사": "능동의 V-ing vs 수동의 과거분사 혼동(boring vs bored).",
     "형용사_부사": "동사·형용사를 수식하는데 형용사 사용(부사가 와야 하는 자리).",
     "비교구문": "the 비교급, the 비교급 / as 원급 as / than 동사 일치 위반.",
     "명사_대명사": "단수/복수, 대명사 선행사 일치, it/them/its 혼동.",
@@ -80,6 +81,9 @@ GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flas
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
+
+# 전역 락 (병렬 생성 시 실시간 중복 회피 리스트 업데이트용)
+global_targets_lock = threading.Lock()
 
 
 # ==================== 지문 관리 ====================
@@ -191,7 +195,6 @@ def pick_focus_pos(text):
 
 
 def previous_grammar_categories(text):
-    """이전 어법 문제에서 사용된 카테고리 (answer_pos 필드를 활용)"""
     cats = []
     for q in questions_for_text(text):
         if q.get("_q_type") == "grammar":
@@ -202,15 +205,13 @@ def previous_grammar_categories(text):
 
 
 def pick_grammar_category(text):
-    """가장 적게 쓰인 어법 카테고리 우선 + 직전과 다른 것"""
     import random
     history = previous_grammar_categories(text)
     if not history:
-        return random.choice(GRAMMAR_CATEGORIES[:8])  # 처음엔 흔한 카테고리부터
+        return random.choice(GRAMMAR_CATEGORIES[:8])
     counts = {c: history.count(c) for c in GRAMMAR_CATEGORIES}
     mn = min(counts.values())
     cands = [c for c in GRAMMAR_CATEGORIES if counts[c] == mn]
-    # 직전과 다른 것 우선
     last = history[-1] if history else None
     cands_diff = [c for c in cands if c != last]
     pool = cands_diff if cands_diff else cands
@@ -302,20 +303,21 @@ __TEXT__
             .replace("__TEXT__", text))
 
 
-def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=None):
+def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=None, available_cats=None):
     avoid_part = ""
     if prev_targets:
-        avoid_part = "\n[중복 금지] 이전 정답 어법 포인트: " + ", ".join(prev_targets) + " — 다시 쓰지 마라."
+        avoid_part = "\n[중복 절대 금지] 다음 어구들은 이미 정답으로 사용되었으니 변형 대상으로 삼지 마라: " + ", ".join(prev_targets)
     if prev_choices:
-        avoid_part += "\n[다양성 힌트] 이전 보기 부분: " + ", ".join(prev_choices) + " — 가능하면 다른 부분을 골라라."
+        avoid_part += "\n[다양성 힌트] 다음 어구들은 보기로 사용되었음. 가급적 다른 부분을 골라라: " + ", ".join(prev_choices)
 
     cat_block = ""
+    pool_str = " / ".join(available_cats) if available_cats else " / ".join(GRAMMAR_CATEGORIES)
+
     if focus_category:
         hint = GRAMMAR_HINTS.get(focus_category, "")
         cat_block = (
-            "\n[★ 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 다 ★]\n"
+            "\n[★ 핵심 강제 규칙: 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 이어야 함 ★]\n"
             "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. "
-            "다른 카테고리는 절대 정답으로 만들지 마라.\n"
             "이 카테고리 함정 패턴 가이드: " + hint + "\n"
             "이 함정을 자연스럽게 지문 안에 녹여서 출제하라.\n"
         )
@@ -325,11 +327,8 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [난이도] 대한민국 고2~고3 상위권 / 수능·모의고사 어법 수준.
 
-[수능 어법 전체 카테고리 풀]
-주어동사 수일치 / 시제 / 능동수동 / 조동사·가정법 / to부정사·동명사 /
-분사·분사구문 / 현재분사 vs 과거분사 / 형용사 vs 부사 / 비교구문 /
-명사·대명사 / 재귀대명사 / 관계대명사 / 관계부사 / what·which·that·whose /
-접속사 vs 전치사 / 병렬구조 / 도치 / 강조구문 / 간접의문문 어순 / 5형식 보어
+[사용 가능한 어법 카테고리 풀]
+__POOL__
 
 [보기 선정 규칙]
 1. 5개 보기는 위 풀에서 **서로 다른 5가지 카테고리**에서 하나씩 선택. 같은 카테고리 두 번 금지.
@@ -361,13 +360,13 @@ __TEXT__
 \"\"\"
 """
     return (template
+            .replace("__POOL__", pool_str)
             .replace("__CAT_BLOCK__", cat_block)
             .replace("__AVOID__", avoid_part)
             .replace("__TEXT__", text))
 
 
 def build_analysis_prompt(text):
-    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해 + 자연 해석"""
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
@@ -420,9 +419,9 @@ def analyze_passage(text, provider, model, api_keys):
     return json.loads(cleaned)
 
 
-def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None, focus_category=None):
+def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None, focus_category=None, available_cats=None):
     if q_type == "grammar":
-        prompt = build_grammar_prompt(text, prev_targets, prev_choices, focus_category=focus_category)
+        prompt = build_grammar_prompt(text, prev_targets, prev_choices, focus_category=focus_category, available_cats=available_cats)
     else:
         prompt = build_prompt(text, prev_targets, focus_pos, prev_choices)
     raw = call_llm(provider, model, prompt, api_keys)
@@ -521,7 +520,6 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-
 # ---------- 세션 상태 초기화 ----------
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
@@ -531,6 +529,8 @@ if "selected_passage_id" not in st.session_state:
     st.session_state.selected_passage_id = None
 if "passage_select_label" not in st.session_state:
     st.session_state.passage_select_label = "(직접 입력)"
+if "shared_seen_targets" not in st.session_state:
+    st.session_state.shared_seen_targets = set()
 
 
 # ==================== 사이드바 ====================
@@ -579,7 +579,6 @@ with st.sidebar:
         label_to_id[label] = p["id"]
     passage_options = list(label_to_id.keys())
 
-    # 현재 선택된 라벨 인덱스 찾기
     current_label = st.session_state.passage_select_label
     if current_label not in passage_options:
         current_label = "(직접 입력)"
@@ -592,7 +591,6 @@ with st.sidebar:
         key="passage_selector",
     )
 
-    # 선택 변경 감지: 선택이 바뀌었으면 즉시 적용 + rerun
     if new_label != st.session_state.passage_select_label:
         st.session_state.passage_select_label = new_label
         target_id = label_to_id[new_label]
@@ -605,12 +603,10 @@ with st.sidebar:
             if p:
                 st.session_state.selected_passage_id = target_id
                 st.session_state.current_text = p["text"]
-                # text_area widget의 키 값을 직접 설정
                 st.session_state["text_area"] = p["text"]
         st.session_state.last_results = []
         st.rerun()
 
-    # 새 지문 저장
     new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
     if st.button("💾 현재 지문 저장"):
         if not new_title.strip():
@@ -642,7 +638,6 @@ with st.sidebar:
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
 
-# 현재 지문 상태 배지
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
     if cur_p:
@@ -651,7 +646,6 @@ if st.session_state.selected_passage_id:
             unsafe_allow_html=True,
         )
 
-# text_area는 key로만 제어 (value 파라미터를 함께 쓰면 충돌)
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
 
@@ -662,19 +656,15 @@ user_input = st.text_area(
     key="text_area",
 )
 
-# 텍스트 변경 감지
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
-    # 분석 결과 초기화
     if "analysis_result" in st.session_state:
         del st.session_state["analysis_result"]
-    # 수동 변경이면 보관함 연결 해제
     if st.session_state.selected_passage_id:
         st.session_state.selected_passage_id = None
         st.session_state.passage_select_label = "(직접 입력)"
 
-# 탭 구분
 tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
 
 # =============== TAB Q: 문제 생성 ===============
@@ -714,53 +704,6 @@ with tab_q:
 
 
 # ---------- 문제 생성 로직 ----------
-def make_one(text):
-    prev_t = previous_targets(text)
-    prev_c = previous_choice_words(text)
-    if free_pos:
-        focus = None
-    elif auto_pos:
-        focus = pick_focus_pos(text)
-    else:
-        focus = manual_pos
-    # 어법 모드면 카테고리 자동 선정
-    grammar_cat = None
-    if q_type == "grammar":
-        grammar_cat = pick_grammar_category(text)
-    api_keys = {
-        "gemini": st.session_state.get("gemini_api_key", ""),
-        "openai": st.session_state.get("openai_api_key", ""),
-        "anthropic": st.session_state.get("anthropic_api_key", ""),
-        "deepseek": st.session_state.get("deepseek_api_key", ""),
-    }
-    last_err = None
-    for attempt in range(4):
-        try:
-            result = generate_one_raw(text, prev_t, focus, provider, model, api_keys,
-                                       q_type=q_type, prev_choices=prev_c,
-                                       focus_category=grammar_cat)
-        except Exception as e:
-            last_err = e
-            continue
-        ow = (result.get("original_word") or "").strip().lower()
-        if not ow:
-            last_err = "original_word 누락"
-            continue
-        if ow in {t.lower() for t in prev_t}:
-            last_err = "중복 타겟: " + ow
-            continue
-        result["original_text"] = text.strip()
-        result["_provider"] = provider
-        result["_model"] = model
-        result["_q_type"] = q_type
-        if st.session_state.selected_passage_id:
-            result["passage_id"] = st.session_state.selected_passage_id
-        save_question(result)
-        st.session_state.last_results.append(result)
-        return result
-    raise RuntimeError("생성 실패: " + str(last_err))
-
-
 def render_loading(placeholder, current, total, provider_name, mode_label=""):
     sub = provider_name.upper() + " · " + str(current) + " / " + str(total)
     if mode_label:
@@ -775,12 +718,44 @@ def render_loading(placeholder, current, total, provider_name, mode_label=""):
     )
     placeholder.markdown(overlay_html, unsafe_allow_html=True)
 
-
-def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
-                          q_type_snapshot, prev_choices_snapshot, focus_category_snapshot=None):
-    return generate_one_raw(text, prev_targets_snapshot, focus, provider_name, model_name, api_keys,
-                             q_type=q_type_snapshot, prev_choices=prev_choices_snapshot,
-                             focus_category=focus_category_snapshot)
+def _make_one_threadsafe(text, focus, provider_name, model_name, api_keys,
+                          q_type_snapshot, prev_choices_snapshot, focus_category_snapshot=None, available_cats_snapshot=None):
+    last_err = None
+    for attempt in range(5):
+        try:
+            with global_targets_lock:
+                current_prev_t = list(st.session_state.shared_seen_targets)
+                
+            result = generate_one_raw(text, current_prev_t, focus, provider_name, model_name, api_keys,
+                                     q_type=q_type_snapshot, prev_choices=prev_choices_snapshot,
+                                     focus_category=focus_category_snapshot, available_cats=available_cats_snapshot)
+                                     
+            ow = (result.get("original_word") or "").strip()
+            if not ow:
+                last_err = "original_word 누락"
+                continue
+                
+            ow_lower = ow.lower()
+            is_dup = False
+            with global_targets_lock:
+                for t in st.session_state.shared_seen_targets:
+                    t_lower = t.lower()
+                    if ow_lower in t_lower or t_lower in ow_lower:
+                        is_dup = True
+                        break
+                if not is_dup:
+                    st.session_state.shared_seen_targets.add(ow)
+            
+            if is_dup:
+                last_err = "부분 일치로 인한 중복 회피: " + ow
+                continue
+                
+            return result
+        except Exception as e:
+            last_err = e
+            continue
+            
+    raise RuntimeError(f"강력 필터링 5회 재시도 실패. 마지막 에러: {last_err}")
 
 
 with tab_q:
@@ -800,38 +775,49 @@ with tab_q:
                 "deepseek": st.session_state.get("deepseek_api_key", ""),
             }
 
+            # 현재 지문의 기존 타겟 불러와서 락 세트에 등록
+            prev_snapshot = previous_targets(user_input)
+            with global_targets_lock:
+                st.session_state.shared_seen_targets = set(prev_snapshot)
+                
+            prev_choices_snap = previous_choice_words(user_input)
+
+            tasks_focus = []
+            if free_pos or q_type == "grammar":
+                tasks_focus = [None] * n
+            elif auto_pos:
+                focus_default = pick_focus_pos(user_input)
+                for i in range(n):
+                    tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
+            else:
+                tasks_focus = [manual_pos] * n
+
+            # 어법 모드 시 완전 분리된 카테고리 풀 할당
+            tasks_grammar_cat = []
+            available_cats = []
+            if q_type == "grammar":
+                grammar_history = previous_grammar_categories(user_input)
+                available_cats = [c for c in GRAMMAR_CATEGORIES if c not in grammar_history]
+                if not available_cats:
+                    available_cats = GRAMMAR_CATEGORIES.copy()
+                
+                counts = {c: grammar_history.count(c) for c in available_cats}
+                sorted_cats = sorted(available_cats, key=lambda c: counts[c])
+                
+                # 강제로 스레드마다 고유한 카테고리 분배
+                for i in range(n):
+                    tasks_grammar_cat.append(sorted_cats[i % len(sorted_cats)])
+            else:
+                tasks_grammar_cat = [None] * n
+
             if n > 1 and parallel_mode:
                 render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
-                prev_snapshot = previous_targets(user_input)
-                prev_choices_snap = previous_choice_words(user_input)
-
-                tasks_focus = []
-                if free_pos or q_type == "grammar":
-                    tasks_focus = [None] * n
-                elif auto_pos:
-                    focus_default = pick_focus_pos(user_input)
-                    for i in range(n):
-                        tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
-                else:
-                    tasks_focus = [manual_pos] * n
-
-                # 어법 모드면 카테고리도 N개 분배
-                tasks_grammar_cat = []
-                if q_type == "grammar":
-                    grammar_history = previous_grammar_categories(user_input)
-                    counts = {c: grammar_history.count(c) for c in GRAMMAR_CATEGORIES}
-                    sorted_cats = sorted(GRAMMAR_CATEGORIES, key=lambda c: counts[c])
-                    # 가장 적게 쓰인 순으로 N개 선정
-                    tasks_grammar_cat = sorted_cats[:n]
-                else:
-                    tasks_grammar_cat = [None] * n
-
                 results = []
                 with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
                     futures = {
-                        ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
+                        ex.submit(_make_one_threadsafe, user_input, tasks_focus[i],
                                   provider, model, api_keys_snapshot, q_type, prev_choices_snap,
-                                  tasks_grammar_cat[i]): i for i in range(n)
+                                  tasks_grammar_cat[i], available_cats): i for i in range(n)
                     }
                     for f in concurrent.futures.as_completed(futures):
                         try:
@@ -839,16 +825,7 @@ with tab_q:
                         except Exception as e:
                             errors.append(str(e))
 
-                seen = {t.lower() for t in prev_snapshot}
                 for r in results:
-                    ow = (r.get("original_word") or "").strip().lower()
-                    if not ow:
-                        errors.append("original_word 누락")
-                        continue
-                    if ow in seen:
-                        errors.append("중복 정답으로 제외: " + ow)
-                        continue
-                    seen.add(ow)
                     r["original_text"] = user_input.strip()
                     r["_provider"] = provider
                     r["_model"] = model
@@ -862,7 +839,15 @@ with tab_q:
                 for i in range(n):
                     render_loading(loader, i + 1, n, provider)
                     try:
-                        make_one(user_input)
+                        r = _make_one_threadsafe(user_input, tasks_focus[i], provider, model, api_keys_snapshot, q_type, prev_choices_snap, tasks_grammar_cat[i], available_cats)
+                        r["original_text"] = user_input.strip()
+                        r["_provider"] = provider
+                        r["_model"] = model
+                        r["_q_type"] = q_type
+                        if st.session_state.selected_passage_id:
+                            r["passage_id"] = st.session_state.selected_passage_id
+                        save_question(r)
+                        st.session_state.last_results.append(r)
                         ok += 1
                     except Exception as e:
                         errors.append(str(e))
@@ -922,10 +907,8 @@ with tab_q:
 
 # ============= TAB A: 지문 분석 =============
 def render_annotated_html(annotated):
-    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 슬래시를 디자인 요소로 변환"""
     def repl(m):
         full = m.group(1).strip()
-        # 첫 토큰이 성분(S/V/O/C/OC/M/Conj 등)
         parts = full.split("·", 1)
         comp = parts[0].strip()
         pos = parts[1].strip() if len(parts) > 1 else ""
@@ -946,23 +929,16 @@ def render_annotated_html(annotated):
         chip += "</span>"
         return chip
         
-    # 1. HTML 태그가 생성되기 전에 슬래시(/)를 먼저 치환 (</span> 내부 슬래시 치환 방지)
     html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", annotated)
-    
-    # 2. ⟦성분·품사⟧ 태그 변환
     html = re.sub(r"⟦(.*?)⟧", repl, html)
-    
     return html
 
 def render_chunked_original(annotated, original):
-    """annotated 텍스트에서 ⟦성분⟧ 태그만 제거하고 슬래시는 살려서 원문을 재구성"""
     if not annotated:
         return original
-    # 1. ⟦ ⟧ 안의 내용물 제거
     clean_text = re.sub(r"⟦.*?⟧", "", annotated)
     if not clean_text.strip():
         return original
-    # 2. 슬래시 디자인 적용
     html = re.sub(r"\s*/\s*", " <span class='chunk-sep'>/</span> ", clean_text.strip())
     return html
 
@@ -971,7 +947,6 @@ with tab_a:
     if not user_input.strip():
         st.info("영어 지문을 입력하면 분석을 시작할 수 있어요.")
     else:
-        # 분석 캐시 확인
         cached = st.session_state.get("analysis_result")
         cached_for = st.session_state.get("analysis_for_text", "")
 
@@ -1009,7 +984,6 @@ with tab_a:
             finally:
                 loader.empty()
 
-        # 캐시 표시 (지문이 바뀌면 표시 안 함)
         if cached and cached_for == user_input:
             sentences = cached.get("sentences", [])
             if not sentences:
@@ -1018,7 +992,6 @@ with tab_a:
                 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
                 st.markdown("### 📖 분석 결과 (" + str(len(sentences)) + "개 문장)")
 
-                # 성분 범례
                 legend = (
                     "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af'>"
                     "<span class='tag-chip tag-S'>S 주어</span> "
