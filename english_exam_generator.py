@@ -276,6 +276,61 @@ __TEXT__
     return template.replace("__AVOID__", avoid_part).replace("__TEXT__", text)
 
 
+def build_analysis_prompt(text):
+    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해 + 자연 해석"""
+    return """너는 한국 고등학생을 가르치는 영어 강사다.
+다음 영어 지문을 문장 단위로 정밀 분석해라.
+
+[작업 단위]
+각 문장마다 아래 4가지를 출력한다.
+
+1. original: 영어 원문 그대로 (한 문장씩)
+
+2. annotated: 영어 원문에 어구 단위로 인라인 주석 추가
+   - 형식: "어구⟦성분·품사⟧ 어구⟦성분·품사⟧ ..."
+   - 문장 성분 약어 사용: S(주어), V(동사), O(목적어), C(주격보어), OC(목적격보어), M(수식어/부사구), Conj(접속사)
+   - 품사도 같이 표기: 명사구, 동사, 형용사, 부사, 전치사구, 분사구문, to부정사, 관계절, 종속절 등
+   - 예시: "Good thinkers⟦S·명사구⟧ rarely⟦M·부사⟧ limit⟦V·타동사⟧ themselves⟦O·재귀대명사⟧ to a single way⟦M·전치사구⟧ of understanding the world⟦M·전치사구·동명사⟧."
+   - 절(clause)이 들어있으면 절 단위로 묶어서 표기. 예: "when Galileo finally got around to doing some empirical studies of gravity⟦M·종속절(시간)⟧"
+
+3. literal: 직독직해 — 영어 어구 순서 그대로 한국어로 끊어서 번역
+   - 슬래시(/)로 어구 구분
+   - 예시: "좋은 사상가들은 / 거의 ~하지 않는다 / 자신을 가두지 / 한 가지 방식에 / 세상을 이해하는"
+
+4. translation: 자연스러운 한국어 해석 (의역, 한 문장)
+   - 예시: "훌륭한 사상가들은 세상을 이해하는 한 가지 방식에만 자신을 가두지 않는다."
+
+[출력] 마크다운 코드블록 없이 순수 JSON만:
+{
+  "sentences": [
+    {
+      "original": "...",
+      "annotated": "...",
+      "literal": "...",
+      "translation": "..."
+    },
+    ...
+  ]
+}
+
+원문:
+\"\"\"
+__TEXT__
+\"\"\"
+""".replace("__TEXT__", text)
+
+
+def analyze_passage(text, provider, model, api_keys):
+    prompt = build_analysis_prompt(text)
+    raw = call_llm(provider, model, prompt, api_keys)
+    cleaned = raw.strip().replace("```json", "").replace("```", "").strip()
+    s = cleaned.find("{")
+    e = cleaned.rfind("}")
+    if s != -1 and e != -1:
+        cleaned = cleaned[s:e + 1]
+    return json.loads(cleaned)
+
+
 def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q_type="vocab", prev_choices=None):
     if q_type == "grammar":
         prompt = build_grammar_prompt(text, prev_targets, prev_choices)
@@ -354,6 +409,24 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .loading-sub { color: #cbd5e1; font-size: 0.95rem; }
 .loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
 @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
+
+/* 지문 분석 스타일 */
+.sent-block { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
+.sent-num { display: inline-block; padding: 2px 10px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #ec4899); color:#fff; font-size: 0.75rem; font-weight: 700; margin-bottom: 10px; }
+.sent-original { color:#e5e7eb; font-size: 1rem; line-height:1.7; margin-bottom: 12px; font-weight: 500; }
+.sent-row { color:#cbd5e1; font-size: 0.93rem; line-height: 1.85; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
+.sent-row .lbl { color: #c084fc; font-weight: 700; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-right: 8px; }
+.sent-row.literal { color: #fbcfe8; font-family: "Pretendard", sans-serif; }
+.sent-row.translation { color: #f5f3ff; font-size: 0.97rem; }
+.sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.0; word-spacing: 2px; }
+.sent-annotated .anno { display: inline-block; margin: 0 1px; padding: 0; }
+.tag-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; margin-left: 2px; vertical-align: 1px; letter-spacing: 0.02em; }
+.tag-S  { background: rgba(59,130,246,0.25); color: #93c5fd; border: 1px solid rgba(59,130,246,0.4); }
+.tag-V  { background: rgba(236,72,153,0.25); color: #f9a8d4; border: 1px solid rgba(236,72,153,0.4); }
+.tag-O  { background: rgba(34,197,94,0.25);  color: #86efac; border: 1px solid rgba(34,197,94,0.4); }
+.tag-C  { background: rgba(234,179,8,0.25);  color: #fde68a; border: 1px solid rgba(234,179,8,0.4); }
+.tag-OC { background: rgba(249,115,22,0.25); color: #fdba74; border: 1px solid rgba(249,115,22,0.4); }
+.tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -503,44 +576,51 @@ user_input = st.text_area(
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
+    # 분석 결과 초기화
+    if "analysis_result" in st.session_state:
+        del st.session_state["analysis_result"]
     # 수동 변경이면 보관함 연결 해제
     if st.session_state.selected_passage_id:
         st.session_state.selected_passage_id = None
         st.session_state.passage_select_label = "(직접 입력)"
 
-# 메트릭
-if user_input.strip():
-    existing = questions_for_text(user_input)
-    used_targets = [q.get("original_word", "?") for q in existing]
-    if q_type == "grammar":
-        pos_label = "어법"
-    elif free_pos:
-        pos_label = "자유"
-    elif auto_pos:
-        pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
-    else:
-        pos_label = POS_KOR.get(manual_pos, "?")
+# 탭 구분
+tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
 
-    metric_html = (
-        "<div class='metric-row'>"
-        "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
-        "<div class='metric'><div class='label'>다음 정답</div><div class='value'>" + pos_label + "</div></div>"
-        "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
-        "</div>"
-    )
-    st.markdown(metric_html, unsafe_allow_html=True)
-    if used_targets:
-        st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답:</div>", unsafe_allow_html=True)
-        chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
-        st.markdown(chips, unsafe_allow_html=True)
+# =============== TAB Q: 문제 생성 ===============
+with tab_q:
+    if user_input.strip():
+        existing = questions_for_text(user_input)
+        used_targets = [q.get("original_word", "?") for q in existing]
+        if q_type == "grammar":
+            pos_label = "어법"
+        elif free_pos:
+            pos_label = "자유"
+        elif auto_pos:
+            pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
+        else:
+            pos_label = POS_KOR.get(manual_pos, "?")
 
-st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+        metric_html = (
+            "<div class='metric-row'>"
+            "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
+            "<div class='metric'><div class='label'>다음 정답</div><div class='value'>" + pos_label + "</div></div>"
+            "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
+            "</div>"
+        )
+        st.markdown(metric_html, unsafe_allow_html=True)
+        if used_targets:
+            st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답:</div>", unsafe_allow_html=True)
+            chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
+            st.markdown(chips, unsafe_allow_html=True)
 
-c1, c2, c3 = st.columns([1, 1, 2])
-with c1:
-    btn_one = st.button("🌀 새 문제 만들기")
-with c2:
-    btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에")
+    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        btn_one = st.button("🌀 새 문제 만들기")
+    with c2:
+        btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에", key="btn_batch_q")
 
 
 # ---------- 문제 생성 로직 ----------
@@ -607,84 +687,85 @@ def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, mode
                              q_type=q_type_snapshot, prev_choices=prev_choices_snapshot)
 
 
-if btn_one or btn_batch:
-    if not user_input.strip():
-        st.warning("먼저 영어 지문을 입력해주세요.")
-    else:
-        n = int(batch_n) if btn_batch else 1
-        loader = st.empty()
-        ok = 0
-        errors = []
+with tab_q:
+    if btn_one or btn_batch:
+        if not user_input.strip():
+            st.warning("먼저 영어 지문을 입력해주세요.")
+        else:
+            n = int(batch_n) if btn_batch else 1
+            loader = st.empty()
+            ok = 0
+            errors = []
 
-        api_keys_snapshot = {
-            "gemini": st.session_state.get("gemini_api_key", ""),
-            "openai": st.session_state.get("openai_api_key", ""),
-            "anthropic": st.session_state.get("anthropic_api_key", ""),
-            "deepseek": st.session_state.get("deepseek_api_key", ""),
-        }
+            api_keys_snapshot = {
+                "gemini": st.session_state.get("gemini_api_key", ""),
+                "openai": st.session_state.get("openai_api_key", ""),
+                "anthropic": st.session_state.get("anthropic_api_key", ""),
+                "deepseek": st.session_state.get("deepseek_api_key", ""),
+            }
 
-        if n > 1 and parallel_mode:
-            render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
-            prev_snapshot = previous_targets(user_input)
-            prev_choices_snap = previous_choice_words(user_input)
+            if n > 1 and parallel_mode:
+                render_loading(loader, 0, n, provider, mode_label=str(n) + "개 동시 생성 중")
+                prev_snapshot = previous_targets(user_input)
+                prev_choices_snap = previous_choice_words(user_input)
 
-            tasks_focus = []
-            if free_pos or q_type == "grammar":
-                tasks_focus = [None] * n
-            elif auto_pos:
-                focus_default = pick_focus_pos(user_input)
-                for i in range(n):
-                    tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
+                tasks_focus = []
+                if free_pos or q_type == "grammar":
+                    tasks_focus = [None] * n
+                elif auto_pos:
+                    focus_default = pick_focus_pos(user_input)
+                    for i in range(n):
+                        tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
+                else:
+                    tasks_focus = [manual_pos] * n
+
+                results = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
+                    futures = {
+                        ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
+                                  provider, model, api_keys_snapshot, q_type, prev_choices_snap): i for i in range(n)
+                    }
+                    for f in concurrent.futures.as_completed(futures):
+                        try:
+                            results.append(f.result())
+                        except Exception as e:
+                            errors.append(str(e))
+
+                seen = {t.lower() for t in prev_snapshot}
+                for r in results:
+                    ow = (r.get("original_word") or "").strip().lower()
+                    if not ow:
+                        errors.append("original_word 누락")
+                        continue
+                    if ow in seen:
+                        errors.append("중복 정답으로 제외: " + ow)
+                        continue
+                    seen.add(ow)
+                    r["original_text"] = user_input.strip()
+                    r["_provider"] = provider
+                    r["_model"] = model
+                    r["_q_type"] = q_type
+                    if st.session_state.selected_passage_id:
+                        r["passage_id"] = st.session_state.selected_passage_id
+                    save_question(r)
+                    st.session_state.last_results.append(r)
+                    ok += 1
             else:
-                tasks_focus = [manual_pos] * n
-
-            results = []
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(n, 8)) as ex:
-                futures = {
-                    ex.submit(_make_one_threadsafe, user_input, prev_snapshot, tasks_focus[i],
-                              provider, model, api_keys_snapshot, q_type, prev_choices_snap): i for i in range(n)
-                }
-                for f in concurrent.futures.as_completed(futures):
+                for i in range(n):
+                    render_loading(loader, i + 1, n, provider)
                     try:
-                        results.append(f.result())
+                        make_one(user_input)
+                        ok += 1
                     except Exception as e:
                         errors.append(str(e))
 
-            seen = {t.lower() for t in prev_snapshot}
-            for r in results:
-                ow = (r.get("original_word") or "").strip().lower()
-                if not ow:
-                    errors.append("original_word 누락")
-                    continue
-                if ow in seen:
-                    errors.append("중복 정답으로 제외: " + ow)
-                    continue
-                seen.add(ow)
-                r["original_text"] = user_input.strip()
-                r["_provider"] = provider
-                r["_model"] = model
-                r["_q_type"] = q_type
-                if st.session_state.selected_passage_id:
-                    r["passage_id"] = st.session_state.selected_passage_id
-                save_question(r)
-                st.session_state.last_results.append(r)
-                ok += 1
-        else:
-            for i in range(n):
-                render_loading(loader, i + 1, n, provider)
-                try:
-                    make_one(user_input)
-                    ok += 1
-                except Exception as e:
-                    errors.append(str(e))
-
-        loader.empty()
-        if ok:
-            st.success(str(ok) + "개 문제 생성 완료")
-        if errors:
-            with st.expander("⚠️ 실패 로그"):
-                for e in errors:
-                    st.write("- " + e)
+            loader.empty()
+            if ok:
+                st.success(str(ok) + "개 문제 생성 완료")
+            if errors:
+                with st.expander("⚠️ 실패 로그"):
+                    for e in errors:
+                        st.write("- " + e)
 
 
 # ---------- 결과 표시 ----------
@@ -709,25 +790,134 @@ def render_question_card(idx, r):
         st.markdown("**해설:** " + str(r.get("explanation", "")))
 
 
-if st.session_state.last_results:
-    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-    st.markdown("### 🧾 이번 세션에서 만든 문제")
-    for idx, r in enumerate(st.session_state.last_results, start=1):
-        render_question_card(idx, r)
-
-if user_input.strip():
-    saved = questions_for_text(user_input)
-    if saved:
+with tab_q:
+    if st.session_state.last_results:
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-        with st.expander("📚 이 지문 누적 문제 (" + str(len(saved)) + "개)"):
-            for idx, q in enumerate(saved, start=1):
-                qt = "어법" if q.get("_q_type") == "grammar" else "어휘"
-                meta = ("**#" + str(idx) + "** &nbsp; [" + qt + "] 정답 " + str(q.get("answer", "?")) + "번 · "
-                    "`" + str(q.get("original_word", "?")) + "` → `" + str(q.get("modified_word", "?")) + "` · "
-                    + str(q.get("answer_pos", "?")) + " · " + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?")))
-                st.markdown(meta)
-                st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
-                st.caption(q.get("explanation", ""))
+        st.markdown("### 🧾 이번 세션에서 만든 문제")
+        for idx, r in enumerate(st.session_state.last_results, start=1):
+            render_question_card(idx, r)
+
+    if user_input.strip():
+        saved = questions_for_text(user_input)
+        if saved:
+            st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+            with st.expander("📚 이 지문 누적 문제 (" + str(len(saved)) + "개)"):
+                for idx, q in enumerate(saved, start=1):
+                    qt = "어법" if q.get("_q_type") == "grammar" else "어휘"
+                    meta = ("**#" + str(idx) + "** &nbsp; [" + qt + "] 정답 " + str(q.get("answer", "?")) + "번 · "
+                        "`" + str(q.get("original_word", "?")) + "` → `" + str(q.get("modified_word", "?")) + "` · "
+                        + str(q.get("answer_pos", "?")) + " · " + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?")))
+                    st.markdown(meta)
+                    st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
+                    st.caption(q.get("explanation", ""))
+
+
+# ============= TAB A: 지문 분석 =============
+def render_annotated_html(annotated):
+    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환"""
+    def repl(m):
+        full = m.group(1).strip()
+        # 첫 토큰이 성분(S/V/O/C/OC/M/Conj 등)
+        parts = full.split("·", 1)
+        comp = parts[0].strip()
+        pos = parts[1].strip() if len(parts) > 1 else ""
+        comp_cls = "tag-M"
+        if comp == "S":
+            comp_cls = "tag-S"
+        elif comp == "V":
+            comp_cls = "tag-V"
+        elif comp == "O":
+            comp_cls = "tag-O"
+        elif comp == "C":
+            comp_cls = "tag-C"
+        elif comp == "OC":
+            comp_cls = "tag-OC"
+        chip = "<span class='tag-chip " + comp_cls + "'>" + comp
+        if pos:
+            chip += "·" + pos
+        chip += "</span>"
+        return chip
+    return re.sub(r"⟦(.*?)⟧", repl, annotated)
+
+
+with tab_a:
+    if not user_input.strip():
+        st.info("영어 지문을 입력하면 분석을 시작할 수 있어요.")
+    else:
+        # 분석 캐시 확인
+        cached = st.session_state.get("analysis_result")
+        cached_for = st.session_state.get("analysis_for_text", "")
+
+        col_a1, col_a2 = st.columns([1, 3])
+        with col_a1:
+            run_analysis = st.button("📖 지문 분석 시작", key="run_analysis_btn")
+
+        if run_analysis:
+            api_keys = {
+                "gemini": st.session_state.get("gemini_api_key", ""),
+                "openai": st.session_state.get("openai_api_key", ""),
+                "anthropic": st.session_state.get("anthropic_api_key", ""),
+                "deepseek": st.session_state.get("deepseek_api_key", ""),
+            }
+            loader = st.empty()
+            loader.markdown(
+                "<div class='loading-overlay'><div class='loading-box'>"
+                "<div class='spinner'></div>"
+                "<div class='loading-title'>지문을 분석 중이에요</div>"
+                "<div class='loading-sub'>" + provider.upper()
+                + " · 문장 단위 직독직해 + 품사 분석"
+                + " <span class='loading-dots'></span></div>"
+                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 15~40초 소요</div>"
+                "</div></div>",
+                unsafe_allow_html=True,
+            )
+            try:
+                result = analyze_passage(user_input, provider, model, api_keys)
+                st.session_state["analysis_result"] = result
+                st.session_state["analysis_for_text"] = user_input
+                cached = result
+                cached_for = user_input
+            except Exception as e:
+                st.error("분석 실패: " + str(e))
+            finally:
+                loader.empty()
+
+        # 캐시 표시 (지문이 바뀌면 표시 안 함)
+        if cached and cached_for == user_input:
+            sentences = cached.get("sentences", [])
+            if not sentences:
+                st.warning("분석 결과가 비어있습니다.")
+            else:
+                st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+                st.markdown("### 📖 분석 결과 (" + str(len(sentences)) + "개 문장)")
+
+                # 성분 범례
+                legend = (
+                    "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af'>"
+                    "<span class='tag-chip tag-S'>S 주어</span> "
+                    "<span class='tag-chip tag-V'>V 동사</span> "
+                    "<span class='tag-chip tag-O'>O 목적어</span> "
+                    "<span class='tag-chip tag-C'>C 보어</span> "
+                    "<span class='tag-chip tag-OC'>OC 목적격보어</span> "
+                    "<span class='tag-chip tag-M'>M 수식어</span>"
+                    "</div>"
+                )
+                st.markdown(legend, unsafe_allow_html=True)
+
+                for i, s in enumerate(sentences, start=1):
+                    annotated_html = render_annotated_html(s.get("annotated", ""))
+                    block = (
+                        "<div class='sent-block'>"
+                        "<div class='sent-num'>문장 " + str(i) + "</div>"
+                        "<div class='sent-original'>" + s.get("original", "") + "</div>"
+                        "<div class='sent-annotated'>" + annotated_html + "</div>"
+                        "<div class='sent-row literal'><span class='lbl'>직독직해</span>"
+                        + s.get("literal", "") + "</div>"
+                        "<div class='sent-row translation'><span class='lbl'>해석</span>"
+                        + s.get("translation", "") + "</div>"
+                        "</div>"
+                    )
+                    st.markdown(block, unsafe_allow_html=True)
 
 
 # ---------- 드라이브 백업 ----------
