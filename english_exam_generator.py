@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (Ollama 포함, 버튼 항상 표시 조건 추가)"""
+"""Word Twist - 지문·문제 누적 저장소 (Ollama 지원, 직독직해 슬래시 처리 포함)"""
 import streamlit as st
 import json
 import os
@@ -25,13 +25,13 @@ try:
 except Exception:
     DOCX_AVAILABLE = False
 
-# Ollama 지원 - 임포트 실패해도 버튼은 보이도록 설정 (단, 사용 시 에러 메시지)
+# Ollama 지원 (패키지 없으면 경고만 표시)
 OLLAMA_AVAILABLE = False
 try:
     import ollama
     OLLAMA_AVAILABLE = True
 except ImportError:
-    pass  # Ollama 미설치 시에도 UI에 옵션은 표시하되, 사용 시 오류 안내
+    pass
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -80,7 +80,6 @@ GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flas
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
-# Ollama 모델 목록은 사용자가 직접 입력하거나 나중에 불러옴
 
 
 # ==================== 지문 관리 ====================
@@ -410,6 +409,7 @@ __TEXT__
 
 
 def build_analysis_prompt(text):
+    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해(슬래시 강제) + 자연 해석"""
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
@@ -425,9 +425,11 @@ def build_analysis_prompt(text):
    - 예시: "Good thinkers⟦S·명사구⟧ rarely⟦M·부사⟧ limit⟦V·타동사⟧ themselves⟦O·재귀대명사⟧ to a single way⟦M·전치사구⟧ of understanding the world⟦M·전치사구·동명사⟧."
    - 절(clause)이 들어있으면 절 단위로 묶어서 표기. 예: "when Galileo finally got around to doing some empirical studies of gravity⟦M·종속절(시간)⟧"
 
-3. literal: 직독직해 — 영어 어구 순서 그대로 한국어로 끊어서 번역
-   - 슬래시(/)로 어구 구분
-   - 예시: "좋은 사상가들은 / 거의 ~하지 않는다 / 자신을 가두지 / 한 가지 방식에 / 세상을 이해하는"
+3. literal: 직독직해 — 반드시 각 어구 사이에 슬래시(/)를 넣어 구분하라. 절대 슬래시를 생략하지 말고, 공백만으로 구분하지 마라.
+   - 형식: "단어1 / 단어2 / 단어3 ..."
+   - 올바른 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중들을"
+   - 틀린 예: "그는 특히 좋아했다 보는 것을 화려한 군중들을" (슬래시 없음)
+   - 슬래시가 없으면 출력 형식 위반으로 간주한다.
 
 4. translation: 자연스러운 한국어 해석 (의역, 한 문장)
    - 예시: "훌륭한 사상가들은 세상을 이해하는 한 가지 방식에만 자신을 가두지 않는다."
@@ -597,9 +599,7 @@ if "passage_select_label" not in st.session_state:
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    # 프로바이더 목록: 항상 Ollama를 표시하되, OLLAMA_AVAILABLE 여부에 따라 설명 추가
     provider_options = ["gemini", "openai", "anthropic", "deepseek", "ollama"]
-    # 사용자 친화적 표시 이름
     provider_labels = {
         "gemini": "Gemini",
         "openai": "GPT",
@@ -614,10 +614,9 @@ with st.sidebar:
         horizontal=True
     )
     if provider == "ollama" and not OLLAMA_AVAILABLE:
-        st.error("❌ Ollama가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
-        st.info("💡 모델은 로컬에서 무료로 사용 가능합니다. 설치 방법: [Ollama 공식 사이트](https://ollama.com)")
+        st.error("❌ Ollama 패키지가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
+        st.info("💡 로컬 무료 사용: [Ollama 공식 사이트](https://ollama.com)")
 
-    # 각 Provider별 설정
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
         gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
@@ -635,20 +634,19 @@ with st.sidebar:
         anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
         st.session_state["anthropic_api_key"] = anthropic_key
     elif provider == "ollama":
-        # Ollama 모델 목록 가져오기 시도
         if OLLAMA_AVAILABLE:
             try:
                 models = ollama.list()['models']
                 model_names = [m['name'] for m in models]
                 if not model_names:
-                    st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.2` 등을 실행하세요.")
-                    model_names = ["llama3.2"]  # 기본값
+                    st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.2` 실행하세요.")
+                    model_names = ["llama3.2"]
                 model = st.selectbox("모델", model_names, index=0)
             except Exception as e:
                 st.error(f"Ollama 서버 연결 실패: {e}\n터미널에서 `ollama serve` 실행 중인지 확인하세요.")
                 model = st.text_input("모델명 (직접 입력)", "llama3.2")
         else:
-            model = st.text_input("모델명", "llama3.2", disabled=True, help="Ollama 패키지가 설치되어 있지 않습니다. pip install ollama")
+            model = st.text_input("모델명", "llama3.2", disabled=True, help="Ollama 패키지 미설치")
         st.info("✅ Ollama 사용 시 API 키 불필요, 무제한 생성 가능")
 
     st.markdown("---")
@@ -738,7 +736,7 @@ with st.sidebar:
 
 # ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원)</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원, 직독직해 슬래시 처리)</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -1133,13 +1131,17 @@ with tab_a:
                 st.markdown(legend, unsafe_allow_html=True)
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
+                    # literal에 슬래시가 없으면 사용자에게 경고 (선택적)
+                    literal_text = s.get("literal", "")
+                    if "/" not in literal_text and len(literal_text) > 5:
+                        st.caption(f"⚠️ 문장 {i} 직독직해에 슬래시(/)가 없습니다. LLM이 형식을 따르지 않았습니다.")
                     block = (
                         "<div class='sent-block'>"
                         "<div class='sent-num'>문장 " + str(i) + "</div>"
                         "<div class='sent-original'>" + s.get("original", "") + "</div>"
                         "<div class='sent-annotated'>" + annotated_html + "</div>"
                         "<div class='sent-row literal'><span class='lbl'>직독직해</span>"
-                        + s.get("literal", "") + "</div>"
+                        + literal_text + "</div>"
                         "<div class='sent-row translation'><span class='lbl'>해석</span>"
                         + s.get("translation", "") + "</div>"
                         "</div>"
