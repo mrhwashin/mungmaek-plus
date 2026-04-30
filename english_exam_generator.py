@@ -17,6 +17,14 @@ try:
 except Exception:
     anthropic = None
 
+try:
+    from docx import Document
+    from docx.shared import Pt, RGBColor
+    from io import BytesIO
+    DOCX_AVAILABLE = True
+except Exception:
+    DOCX_AVAILABLE = False
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -147,10 +155,35 @@ def load_all_questions():
 
 
 def save_question(data):
+    if "_id" not in data:
+        data["_id"] = str(uuid.uuid4())
+    if "_saved_at" not in data:
+        data["_saved_at"] = now_iso()
     fd = load_all_questions()
     fd.append(data)
     with open(SAVE_FILE, "w", encoding="utf-8") as f:
         json.dump(fd, f, ensure_ascii=False, indent=4)
+
+
+def delete_question_by_id(qid):
+    fd = load_all_questions()
+    fd = [q for q in fd if q.get("_id") != qid]
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(fd, f, ensure_ascii=False, indent=4)
+
+
+def delete_questions_for_text(text):
+    """이 지문의 모든 문제 삭제"""
+    t = text.strip()
+    fd = load_all_questions()
+    fd = [q for q in fd if q.get("original_text", "").strip() != t]
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump(fd, f, ensure_ascii=False, indent=4)
+
+
+def delete_all_questions():
+    with open(SAVE_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f, ensure_ascii=False, indent=4)
 
 
 def questions_for_text(text):
