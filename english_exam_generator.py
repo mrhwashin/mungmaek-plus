@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (Ollama 포함)"""
+"""Word Twist - 지문·문제 누적 저장소 (Ollama 포함, 버튼 항상 표시 조건 추가)"""
 import streamlit as st
 import json
 import os
@@ -25,12 +25,13 @@ try:
 except Exception:
     DOCX_AVAILABLE = False
 
-# Ollama 지원
+# Ollama 지원 - 임포트 실패해도 버튼은 보이도록 설정 (단, 사용 시 에러 메시지)
+OLLAMA_AVAILABLE = False
 try:
     import ollama
     OLLAMA_AVAILABLE = True
 except ImportError:
-    OLLAMA_AVAILABLE = False
+    pass  # Ollama 미설치 시에도 UI에 옵션은 표시하되, 사용 시 오류 안내
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -79,6 +80,7 @@ GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flas
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
+# Ollama 모델 목록은 사용자가 직접 입력하거나 나중에 불러옴
 
 
 # ==================== 지문 관리 ====================
@@ -164,7 +166,6 @@ def delete_question_by_id(qid):
 
 
 def delete_questions_for_text(text):
-    """이 지문의 모든 문제 삭제"""
     t = text.strip()
     fd = load_all_questions()
     fd = [q for q in fd if q.get("original_text", "").strip() != t]
@@ -263,7 +264,7 @@ def call_llm(provider, model, prompt, api_keys):
         return r.choices[0].message.content
     if provider == "ollama":
         if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama가 설치되지 않았습니다. `pip install ollama` 실행 후 다시 시도하세요.")
+            raise RuntimeError("Ollama 패키지가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
         response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
         return response["message"]["content"]
     raise ValueError("unknown provider: " + str(provider))
@@ -596,13 +597,27 @@ if "passage_select_label" not in st.session_state:
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    provider_options = ["gemini", "openai", "anthropic", "deepseek"]
-    if OLLAMA_AVAILABLE:
-        provider_options.append("ollama")
-    provider = st.radio("Provider", provider_options,
-        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"}[x],
-        horizontal=True)
+    # 프로바이더 목록: 항상 Ollama를 표시하되, OLLAMA_AVAILABLE 여부에 따라 설명 추가
+    provider_options = ["gemini", "openai", "anthropic", "deepseek", "ollama"]
+    # 사용자 친화적 표시 이름
+    provider_labels = {
+        "gemini": "Gemini",
+        "openai": "GPT",
+        "anthropic": "Claude",
+        "deepseek": "DeepSeek",
+        "ollama": "Ollama (로컬)" + ("" if OLLAMA_AVAILABLE else " ⚠️ 미설치")
+    }
+    provider = st.radio(
+        "Provider",
+        provider_options,
+        format_func=lambda x: provider_labels[x],
+        horizontal=True
+    )
+    if provider == "ollama" and not OLLAMA_AVAILABLE:
+        st.error("❌ Ollama가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
+        st.info("💡 모델은 로컬에서 무료로 사용 가능합니다. 설치 방법: [Ollama 공식 사이트](https://ollama.com)")
 
+    # 각 Provider별 설정
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
         gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
@@ -620,18 +635,21 @@ with st.sidebar:
         anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
         st.session_state["anthropic_api_key"] = anthropic_key
     elif provider == "ollama":
-        # Ollama 설치된 모델 목록 가져오기
-        try:
-            models = ollama.list()['models']
-            model_names = [m['name'] for m in models]
-            if not model_names:
-                st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.1:8b` 실행 후 다시 시도하세요.")
-                model_names = ["llama3.1:8b"]
-            model = st.selectbox("모델", model_names, index=0)
-        except Exception:
-            st.error("Ollama 서버에 연결할 수 없습니다. `ollama serve` 실행 여부를 확인하세요.")
-            model = st.text_input("모델명 (직접 입력)", "llama3.1:8b")
-        st.info("로컬 Ollama 사용: API 키 불필요, 무제한 생성 가능")
+        # Ollama 모델 목록 가져오기 시도
+        if OLLAMA_AVAILABLE:
+            try:
+                models = ollama.list()['models']
+                model_names = [m['name'] for m in models]
+                if not model_names:
+                    st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.2` 등을 실행하세요.")
+                    model_names = ["llama3.2"]  # 기본값
+                model = st.selectbox("모델", model_names, index=0)
+            except Exception as e:
+                st.error(f"Ollama 서버 연결 실패: {e}\n터미널에서 `ollama serve` 실행 중인지 확인하세요.")
+                model = st.text_input("모델명 (직접 입력)", "llama3.2")
+        else:
+            model = st.text_input("모델명", "llama3.2", disabled=True, help="Ollama 패키지가 설치되어 있지 않습니다. pip install ollama")
+        st.info("✅ Ollama 사용 시 API 키 불필요, 무제한 생성 가능")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -753,42 +771,34 @@ tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
 
 
 # =============== TAB Q: 문제 생성 ===============
-with tab_q:
-    if user_input.strip():
-        existing = questions_for_text(user_input)
-        used_targets = [q.get("original_word", "?") for q in existing]
-        if q_type == "grammar":
-            pos_label = "어법"
-        elif free_pos:
-            pos_label = "자유"
-        elif auto_pos:
-            pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
-        else:
-            pos_label = POS_KOR.get(manual_pos, "?")
-
-        metric_html = (
-            "<div class='metric-row'>"
-            "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
-            "<div class='metric'><div class='label'>다음 정답</div><div class='value'>" + pos_label + "</div></div>"
-            "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
-            "</div>"
-        )
-        st.markdown(metric_html, unsafe_allow_html=True)
-        if used_targets:
-            st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답:</div>", unsafe_allow_html=True)
-            chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
-            st.markdown(chips, unsafe_allow_html=True)
-
-    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-
-    c1, c2, c3 = st.columns([1, 1, 2])
-    with c1:
-        btn_one = st.button("🌀 새 문제 만들기")
-    with c2:
-        btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에", key="btn_batch_q")
+def render_question_card(idx, r, show_delete_button=False):
+    prov = str(r.get("_provider", "?")).upper()
+    pos = str(r.get("answer_pos", "?"))
+    ans = str(r.get("answer", "?"))
+    qtype = str(r.get("_q_type", "vocab"))
+    qtype_label = "어법" if qtype == "grammar" else "어휘"
+    chips = (
+        "<span class='chip chip-accent'>" + prov + "</span>"
+        "<span class='chip'>" + qtype_label + "</span>"
+        "<span class='chip'>" + pos + "</span>"
+        "<span class='chip'>정답 " + ans + "번</span>"
+    )
+    col1, col2 = st.columns([0.9, 0.1])
+    with col1:
+        st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
+        st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
+        with st.expander("정답 · 해설"):
+            st.markdown("**정답:** " + ans + "번")
+            st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
+            st.markdown("**카테고리:** " + pos)
+            st.markdown("**해설:** " + str(r.get("explanation", "")))
+    with col2:
+        if show_delete_button:
+            if st.button("🗑️", key=f"del_{r.get('_id', idx)}"):
+                delete_question_by_id(r.get("_id"))
+                st.rerun()
 
 
-# ---------- 문제 생성 로직 ----------
 def make_one(text):
     prev_t = previous_targets(text)
     prev_c = previous_choice_words(text)
@@ -858,6 +868,39 @@ def _make_one_threadsafe(text, prev_targets_snapshot, focus, provider_name, mode
 
 
 with tab_q:
+    if user_input.strip():
+        existing = questions_for_text(user_input)
+        used_targets = [q.get("original_word", "?") for q in existing]
+        if q_type == "grammar":
+            pos_label = "어법"
+        elif free_pos:
+            pos_label = "자유"
+        elif auto_pos:
+            pos_label = POS_KOR.get(pick_focus_pos(user_input), "?")
+        else:
+            pos_label = POS_KOR.get(manual_pos, "?")
+
+        metric_html = (
+            "<div class='metric-row'>"
+            "<div class='metric'><div class='label'>이 지문 누적</div><div class='value'>" + str(len(existing)) + "개</div></div>"
+            "<div class='metric'><div class='label'>다음 정답</div><div class='value'>" + pos_label + "</div></div>"
+            "<div class='metric'><div class='label'>회피 단어 수</div><div class='value'>" + str(len(used_targets)) + "</div></div>"
+            "</div>"
+        )
+        st.markdown(metric_html, unsafe_allow_html=True)
+        if used_targets:
+            st.markdown("<div class='small-dim' style='margin-top:0.6rem'>이전 정답:</div>", unsafe_allow_html=True)
+            chips = "".join("<span class='chip'>" + w + "</span>" for w in used_targets)
+            st.markdown(chips, unsafe_allow_html=True)
+
+    st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+
+    c1, c2, c3 = st.columns([1, 1, 2])
+    with c1:
+        btn_one = st.button("🌀 새 문제 만들기")
+    with c2:
+        btn_batch = st.button("⚡ " + str(int(batch_n)) + "개 한 번에", key="btn_batch_q")
+
     if btn_one or btn_batch:
         if not user_input.strip():
             st.warning("먼저 영어 지문을 입력해주세요.")
@@ -946,36 +989,6 @@ with tab_q:
                     for e in errors:
                         st.write("- " + e)
 
-
-def render_question_card(idx, r, show_delete_button=False):
-    prov = str(r.get("_provider", "?")).upper()
-    pos = str(r.get("answer_pos", "?"))
-    ans = str(r.get("answer", "?"))
-    qtype = str(r.get("_q_type", "vocab"))
-    qtype_label = "어법" if qtype == "grammar" else "어휘"
-    chips = (
-        "<span class='chip chip-accent'>" + prov + "</span>"
-        "<span class='chip'>" + qtype_label + "</span>"
-        "<span class='chip'>" + pos + "</span>"
-        "<span class='chip'>정답 " + ans + "번</span>"
-    )
-    col1, col2 = st.columns([0.9, 0.1])
-    with col1:
-        st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
-        st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
-        with st.expander("정답 · 해설"):
-            st.markdown("**정답:** " + ans + "번")
-            st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
-            st.markdown("**카테고리:** " + pos)
-            st.markdown("**해설:** " + str(r.get("explanation", "")))
-    with col2:
-        if show_delete_button:
-            if st.button("🗑️", key=f"del_{r.get('_id', idx)}"):
-                delete_question_by_id(r.get("_id"))
-                st.rerun()
-
-
-with tab_q:
     if st.session_state.last_results:
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
         st.markdown("### 🧾 이번 세션에서 만든 문제")
@@ -994,7 +1007,6 @@ with tab_q:
                     delete_questions_for_text(user_input)
                     st.success("현재 지문의 모든 문제가 삭제되었습니다.")
                     st.rerun()
-                # Word 내보내기 버튼
                 if DOCX_AVAILABLE and saved:
                     docx_buffer = export_questions_to_docx(saved)
                     if docx_buffer:
@@ -1004,7 +1016,6 @@ with tab_q:
                             file_name=f"word_twist_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.docx",
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
-                # 인쇄용 HTML (PDF) 버튼
                 print_html = """
                 <html><head><meta charset="UTF-8"><title>Word Twist 문제</title>
                 <style>body { font-family: sans-serif; } .q { margin-bottom: 30px; } u { text-decoration: none; border-bottom: 2px solid #a855f7; }</style>
