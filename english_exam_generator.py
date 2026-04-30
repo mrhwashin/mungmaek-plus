@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (Ollama 지원, 직독직해 슬래시 처리 포함)"""
+"""Word Twist - 지문·문제 누적 저장소 (Ollama 지원, 직독직해 슬래시 자동 삽입)"""
 import streamlit as st
 import json
 import os
@@ -529,6 +529,17 @@ def export_questions_to_docx(questions, filename="word_twist_questions.docx"):
     return buffer
 
 
+# ==================== 후처리: 직독직해 슬래시 강제 삽입 ====================
+def add_slashes_to_literal(text):
+    """literal 문자열에 슬래시가 없으면, 공백을 기준으로 분할하여 각 덩어리 사이에 '/ '를 삽입"""
+    if not text or '/' in text:
+        return text
+    parts = text.split()
+    if len(parts) <= 1:
+        return text
+    return ' / '.join(parts)
+
+
 # ==================== Streamlit UI ====================
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
@@ -736,7 +747,7 @@ with st.sidebar:
 
 # ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원, 직독직해 슬래시 처리)</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원, 자동 슬래시 처리)</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -1044,7 +1055,7 @@ with tab_q:
                 render_question_card(idx, q, show_delete_button=True)
 
 
-# ============= TAB A: 지문 분석 =============
+# ============= TAB A: 지문 분석 (슬래시 후처리 적용) =============
 def render_annotated_html(annotated):
     def repl(m):
         full = m.group(1).strip()
@@ -1131,10 +1142,10 @@ with tab_a:
                 st.markdown(legend, unsafe_allow_html=True)
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
-                    # literal에 슬래시가 없으면 사용자에게 경고 (선택적)
-                    literal_text = s.get("literal", "")
-                    if "/" not in literal_text and len(literal_text) > 5:
-                        st.caption(f"⚠️ 문장 {i} 직독직해에 슬래시(/)가 없습니다. LLM이 형식을 따르지 않았습니다.")
+                    raw_literal = s.get("literal", "")
+                    literal_text = add_slashes_to_literal(raw_literal)   # ★ 슬래시 강제 적용
+                    if "/" not in raw_literal and len(raw_literal) > 5:
+                        st.caption(f"⚠️ 문장 {i} 직독직해에 원래 슬래시가 없어 자동으로 추가했습니다.")
                     block = (
                         "<div class='sent-block'>"
                         "<div class='sent-num'>문장 " + str(i) + "</div>"
