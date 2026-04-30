@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (DeepSeek 포함)"""
+"""Word Twist - 지문·문제 누적 저장소 (Ollama 포함)"""
 import streamlit as st
 import json
 import os
@@ -25,6 +25,13 @@ try:
 except Exception:
     DOCX_AVAILABLE = False
 
+# Ollama 지원
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -38,28 +45,11 @@ SCOPES = ['https://www.googleapis.com/auth/drive.file']
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
 POS_KOR = {"verb": "동사", "adjective": "형용사", "adverb": "부사", "conjunction": "접속사"}
 
-# 어법 카테고리 (수능 어법 교재 기준 확장)
 GRAMMAR_CATEGORIES = [
-    "주어동사_수일치",
-    "시제",
-    "능동수동",
-    "조동사_가정법",
-    "to부정사_동명사",
-    "분사_분사구문",
-    "현재분사_과거분사",
-    "형용사_부사",
-    "비교구문",
-    "명사_대명사",
-    "재귀대명사",
-    "관계대명사",
-    "관계부사",
-    "what_which_that_whose",
-    "접속사_전치사",
-    "병렬구조",
-    "도치",
-    "강조구문",
-    "어순",
-    "5형식_보어",
+    "주어동사_수일치", "시제", "능동수동", "조동사_가정법", "to부정사_동명사",
+    "분사_분사구문", "현재분사_과거분사", "형용사_부사", "비교구문",
+    "명사_대명사", "재귀대명사", "관계대명사", "관계부사", "what_which_that_whose",
+    "접속사_전치사", "병렬구조", "도치", "강조구문", "어순", "5형식_보어",
 ]
 
 GRAMMAR_HINTS = {
@@ -84,6 +74,7 @@ GRAMMAR_HINTS = {
     "어순": "간접의문문 어순 (의문사+S+V vs 의문사+V+S) 위반.",
     "5형식_보어": "지각·사역동사 보어 형태 (see/hear/feel/make/let + 원형/V-ing/p.p.).",
 }
+
 GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
@@ -224,7 +215,6 @@ def pick_focus_pos(text):
 
 
 def previous_grammar_categories(text):
-    """이전 어법 문제에서 사용된 카테고리 (answer_pos 필드를 활용)"""
     cats = []
     for q in questions_for_text(text):
         if q.get("_q_type") == "grammar":
@@ -235,22 +225,20 @@ def previous_grammar_categories(text):
 
 
 def pick_grammar_category(text):
-    """가장 적게 쓰인 어법 카테고리 우선 + 직전과 다른 것"""
     import random
     history = previous_grammar_categories(text)
     if not history:
-        return random.choice(GRAMMAR_CATEGORIES[:8])  # 처음엔 흔한 카테고리부터
+        return random.choice(GRAMMAR_CATEGORIES[:8])
     counts = {c: history.count(c) for c in GRAMMAR_CATEGORIES}
     mn = min(counts.values())
     cands = [c for c in GRAMMAR_CATEGORIES if counts[c] == mn]
-    # 직전과 다른 것 우선
     last = history[-1] if history else None
     cands_diff = [c for c in cands if c != last]
     pool = cands_diff if cands_diff else cands
     return random.choice(pool)
 
 
-# ==================== LLM 호출 ====================
+# ==================== LLM 호출 (Ollama 포함) ====================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
         genai.configure(api_key=api_keys.get("gemini", ""))
@@ -273,6 +261,11 @@ def call_llm(provider, model, prompt, api_keys):
         c = OpenAI(api_key=api_keys.get("deepseek", ""), base_url="https://api.deepseek.com")
         r = c.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.9)
         return r.choices[0].message.content
+    if provider == "ollama":
+        if not OLLAMA_AVAILABLE:
+            raise RuntimeError("Ollama가 설치되지 않았습니다. `pip install ollama` 실행 후 다시 시도하세요.")
+        response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
+        return response["message"]["content"]
     raise ValueError("unknown provider: " + str(provider))
 
 
@@ -416,7 +409,6 @@ __TEXT__
 
 
 def build_analysis_prompt(text):
-    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해 + 자연 해석"""
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
@@ -513,6 +505,27 @@ def upload_to_drive(path):
     return f.get('id')
 
 
+# ==================== 내보내기 (Word) ====================
+def export_questions_to_docx(questions, filename="word_twist_questions.docx"):
+    if not DOCX_AVAILABLE:
+        st.error("python-docx 라이브러리가 필요합니다. `pip install python-docx` 실행 후 다시 시도하세요.")
+        return None
+    doc = Document()
+    doc.add_heading('Word Twist - 생성 문제', 0)
+    for i, q in enumerate(questions, 1):
+        doc.add_heading(f'문제 {i}', level=1)
+        doc.add_paragraph(q.get("question_text", ""), style='Normal')
+        doc.add_paragraph(f'정답: {q.get("answer", "?")}번', style='Intense Quote')
+        doc.add_paragraph(f'원래 단어: {q.get("original_word", "?")} → 변형: {q.get("modified_word", "?")}')
+        doc.add_paragraph(f'카테고리: {q.get("answer_pos", "?")}')
+        doc.add_paragraph(f'해설: {q.get("explanation", "")}')
+        doc.add_paragraph('---')
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
 # ==================== Streamlit UI ====================
 st.set_page_config(page_title="Word Twist", page_icon="🌀", layout="wide")
 
@@ -549,7 +562,6 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
 @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
 
-/* 지문 분석 스타일 */
 .sent-block { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
 .sent-num { display: inline-block; padding: 2px 10px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #ec4899); color:#fff; font-size: 0.75rem; font-weight: 700; margin-bottom: 10px; }
 .sent-original { color:#e5e7eb; font-size: 1rem; line-height:1.7; margin-bottom: 12px; font-weight: 500; }
@@ -558,7 +570,6 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .sent-row.literal { color: #fbcfe8; font-family: "Pretendard", sans-serif; }
 .sent-row.translation { color: #f5f3ff; font-size: 0.97rem; }
 .sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.0; word-spacing: 2px; }
-.sent-annotated .anno { display: inline-block; margin: 0 1px; padding: 0; }
 .tag-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; margin-left: 2px; vertical-align: 1px; letter-spacing: 0.02em; }
 .tag-S  { background: rgba(59,130,246,0.25); color: #93c5fd; border: 1px solid rgba(59,130,246,0.4); }
 .tag-V  { background: rgba(236,72,153,0.25); color: #f9a8d4; border: 1px solid rgba(236,72,153,0.4); }
@@ -566,7 +577,6 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .tag-C  { background: rgba(234,179,8,0.25);  color: #fde68a; border: 1px solid rgba(234,179,8,0.4); }
 .tag-OC { background: rgba(249,115,22,0.25); color: #fdba74; border: 1px solid rgba(249,115,22,0.4); }
 .tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
-.chunk-sep { color: #ec4899; font-weight: 700; margin: 0 6px; opacity: 0.6; font-size: 0.95rem; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -586,9 +596,13 @@ if "passage_select_label" not in st.session_state:
 # ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    provider = st.radio("Provider", ["gemini", "openai", "anthropic", "deepseek"],
-        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek"}[x],
+    provider_options = ["gemini", "openai", "anthropic", "deepseek"]
+    if OLLAMA_AVAILABLE:
+        provider_options.append("ollama")
+    provider = st.radio("Provider", provider_options,
+        format_func=lambda x: {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"}[x],
         horizontal=True)
+
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
         gemini_key = st.text_input("Gemini API Key", type="password", value=os.environ.get("GEMINI_API_KEY", ""))
@@ -601,10 +615,23 @@ with st.sidebar:
         model = st.selectbox("모델", DEEPSEEK_MODELS, index=0)
         deepseek_key = st.text_input("DeepSeek API Key", type="password", value=os.environ.get("DEEPSEEK_API_KEY", ""))
         st.session_state["deepseek_api_key"] = deepseek_key
-    else:
+    elif provider == "anthropic":
         model = st.selectbox("모델", CLAUDE_MODELS, index=0)
         anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
         st.session_state["anthropic_api_key"] = anthropic_key
+    elif provider == "ollama":
+        # Ollama 설치된 모델 목록 가져오기
+        try:
+            models = ollama.list()['models']
+            model_names = [m['name'] for m in models]
+            if not model_names:
+                st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.1:8b` 실행 후 다시 시도하세요.")
+                model_names = ["llama3.1:8b"]
+            model = st.selectbox("모델", model_names, index=0)
+        except Exception:
+            st.error("Ollama 서버에 연결할 수 없습니다. `ollama serve` 실행 여부를 확인하세요.")
+            model = st.text_input("모델명 (직접 입력)", "llama3.1:8b")
+        st.info("로컬 Ollama 사용: API 키 불필요, 무제한 생성 가능")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -629,7 +656,6 @@ with st.sidebar:
         label_to_id[label] = p["id"]
     passage_options = list(label_to_id.keys())
 
-    # 현재 선택된 라벨 인덱스 찾기
     current_label = st.session_state.passage_select_label
     if current_label not in passage_options:
         current_label = "(직접 입력)"
@@ -642,7 +668,6 @@ with st.sidebar:
         key="passage_selector",
     )
 
-    # 선택 변경 감지: 선택이 바뀌었으면 즉시 적용 + rerun
     if new_label != st.session_state.passage_select_label:
         st.session_state.passage_select_label = new_label
         target_id = label_to_id[new_label]
@@ -655,12 +680,10 @@ with st.sidebar:
             if p:
                 st.session_state.selected_passage_id = target_id
                 st.session_state.current_text = p["text"]
-                # text_area widget의 키 값을 직접 설정
                 st.session_state["text_area"] = p["text"]
         st.session_state.last_results = []
         st.rerun()
 
-    # 새 지문 저장
     new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
     if st.button("💾 현재 지문 저장"):
         if not new_title.strip():
@@ -687,12 +710,18 @@ with st.sidebar:
             st.success("지문이 삭제되었습니다.")
             st.rerun()
 
+    st.markdown("---")
+    st.markdown("### 🧹 문제 관리")
+    if st.button("🗑️ 전체 문제 초기화 (모든 지문)", use_container_width=True):
+        delete_all_questions()
+        st.success("모든 문제가 삭제되었습니다.")
+        st.rerun()
+
 
 # ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원)</div>", unsafe_allow_html=True)
 
-# 현재 지문 상태 배지
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
     if cur_p:
@@ -701,7 +730,6 @@ if st.session_state.selected_passage_id:
             unsafe_allow_html=True,
         )
 
-# text_area는 key로만 제어 (value 파라미터를 함께 쓰면 충돌)
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
 
@@ -712,20 +740,17 @@ user_input = st.text_area(
     key="text_area",
 )
 
-# 텍스트 변경 감지
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
     st.session_state.last_results = []
-    # 분석 결과 초기화
     if "analysis_result" in st.session_state:
         del st.session_state["analysis_result"]
-    # 수동 변경이면 보관함 연결 해제
     if st.session_state.selected_passage_id:
         st.session_state.selected_passage_id = None
         st.session_state.passage_select_label = "(직접 입력)"
 
-# 탭 구분
 tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
+
 
 # =============== TAB Q: 문제 생성 ===============
 with tab_q:
@@ -773,7 +798,6 @@ def make_one(text):
         focus = pick_focus_pos(text)
     else:
         focus = manual_pos
-    # 어법 모드면 카테고리 자동 선정
     grammar_cat = None
     if q_type == "grammar":
         grammar_cat = pick_grammar_category(text)
@@ -860,18 +884,15 @@ with tab_q:
                     tasks_focus = [None] * n
                 elif auto_pos:
                     focus_default = pick_focus_pos(user_input)
-                    for i in range(n):
-                        tasks_focus.append(POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)])
+                    tasks_focus = [POS_ROTATION[(POS_ROTATION.index(focus_default) + i) % len(POS_ROTATION)] for i in range(n)]
                 else:
                     tasks_focus = [manual_pos] * n
 
-                # 어법 모드면 카테고리도 N개 분배
                 tasks_grammar_cat = []
                 if q_type == "grammar":
                     grammar_history = previous_grammar_categories(user_input)
                     counts = {c: grammar_history.count(c) for c in GRAMMAR_CATEGORIES}
                     sorted_cats = sorted(GRAMMAR_CATEGORIES, key=lambda c: counts[c])
-                    # 가장 적게 쓰인 순으로 N개 선정
                     tasks_grammar_cat = sorted_cats[:n]
                 else:
                     tasks_grammar_cat = [None] * n
@@ -926,8 +947,7 @@ with tab_q:
                         st.write("- " + e)
 
 
-# ---------- 결과 표시 ----------
-def render_question_card(idx, r):
+def render_question_card(idx, r, show_delete_button=False):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
     ans = str(r.get("answer", "?"))
@@ -939,13 +959,20 @@ def render_question_card(idx, r):
         "<span class='chip'>" + pos + "</span>"
         "<span class='chip'>정답 " + ans + "번</span>"
     )
-    st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
-    st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
-    with st.expander("정답 · 해설"):
-        st.markdown("**정답:** " + ans + "번")
-        st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
-        st.markdown("**카테고리:** " + pos)
-        st.markdown("**해설:** " + str(r.get("explanation", "")))
+    col1, col2 = st.columns([0.9, 0.1])
+    with col1:
+        st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
+        st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
+        with st.expander("정답 · 해설"):
+            st.markdown("**정답:** " + ans + "번")
+            st.markdown("**원래:** `" + str(r.get("original_word", "?")) + "` → **변형:** `" + str(r.get("modified_word", "?")) + "`")
+            st.markdown("**카테고리:** " + pos)
+            st.markdown("**해설:** " + str(r.get("explanation", "")))
+    with col2:
+        if show_delete_button:
+            if st.button("🗑️", key=f"del_{r.get('_id', idx)}"):
+                delete_question_by_id(r.get("_id"))
+                st.rerun()
 
 
 with tab_q:
@@ -953,29 +980,65 @@ with tab_q:
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
         st.markdown("### 🧾 이번 세션에서 만든 문제")
         for idx, r in enumerate(st.session_state.last_results, start=1):
-            render_question_card(idx, r)
+            render_question_card(idx, r, show_delete_button=False)
 
     if user_input.strip():
         saved = questions_for_text(user_input)
         if saved:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-            with st.expander("📚 이 지문 누적 문제 (" + str(len(saved)) + "개)"):
-                for idx, q in enumerate(saved, start=1):
-                    qt = "어법" if q.get("_q_type") == "grammar" else "어휘"
-                    meta = ("**#" + str(idx) + "** &nbsp; [" + qt + "] 정답 " + str(q.get("answer", "?")) + "번 · "
-                        "`" + str(q.get("original_word", "?")) + "` → `" + str(q.get("modified_word", "?")) + "` · "
-                        + str(q.get("answer_pos", "?")) + " · " + str(q.get("_provider", "?")) + "/" + str(q.get("_model", "?")))
-                    st.markdown(meta)
-                    st.markdown("<div class='q-card' style='margin-bottom:0.6rem'>" + q.get("question_text", "") + "</div>", unsafe_allow_html=True)
-                    st.caption(q.get("explanation", ""))
+            col_left, col_right = st.columns([1, 1])
+            with col_left:
+                st.markdown("### 📚 이 지문 누적 문제 (" + str(len(saved)) + "개)")
+            with col_right:
+                if st.button("🗑️ 이 지문 모든 문제 삭제", key="delete_all_for_text"):
+                    delete_questions_for_text(user_input)
+                    st.success("현재 지문의 모든 문제가 삭제되었습니다.")
+                    st.rerun()
+                # Word 내보내기 버튼
+                if DOCX_AVAILABLE and saved:
+                    docx_buffer = export_questions_to_docx(saved)
+                    if docx_buffer:
+                        st.download_button(
+                            label="📄 Word로 내보내기",
+                            data=docx_buffer,
+                            file_name=f"word_twist_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+                # 인쇄용 HTML (PDF) 버튼
+                print_html = """
+                <html><head><meta charset="UTF-8"><title>Word Twist 문제</title>
+                <style>body { font-family: sans-serif; } .q { margin-bottom: 30px; } u { text-decoration: none; border-bottom: 2px solid #a855f7; }</style>
+                </head><body>
+                <h1>Word Twist 문제</h1>
+                """
+                for idx, q in enumerate(saved, 1):
+                    print_html += f"""
+                    <div class="q">
+                    <h3>문제 {idx}</h3>
+                    <p>{q.get('question_text', '')}</p>
+                    <p><strong>정답:</strong> {q.get('answer', '?')}번</p>
+                    <p><strong>원래:</strong> {q.get('original_word', '?')} → <strong>변형:</strong> {q.get('modified_word', '?')}</p>
+                    <p><strong>카테고리:</strong> {q.get('answer_pos', '?')}</p>
+                    <p><strong>해설:</strong> {q.get('explanation', '')}</p>
+                    <hr>
+                    </div>
+                    """
+                print_html += "</body></html>"
+                st.download_button(
+                    label="🖨️ 인쇄용 HTML (PDF로 저장 가능)",
+                    data=print_html,
+                    file_name=f"word_twist_print_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html",
+                    mime="text/html"
+                )
+
+            for idx, q in enumerate(saved, start=1):
+                render_question_card(idx, q, show_delete_button=True)
 
 
 # ============= TAB A: 지문 분석 =============
 def render_annotated_html(annotated):
-    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환"""
     def repl(m):
         full = m.group(1).strip()
-        # 첫 토큰이 성분(S/V/O/C/OC/M/Conj 등)
         parts = full.split("·", 1)
         comp = parts[0].strip()
         pos = parts[1].strip() if len(parts) > 1 else ""
@@ -1002,7 +1065,6 @@ with tab_a:
     if not user_input.strip():
         st.info("영어 지문을 입력하면 분석을 시작할 수 있어요.")
     else:
-        # 분석 캐시 확인
         cached = st.session_state.get("analysis_result")
         cached_for = st.session_state.get("analysis_for_text", "")
 
@@ -1040,7 +1102,6 @@ with tab_a:
             finally:
                 loader.empty()
 
-        # 캐시 표시 (지문이 바뀌면 표시 안 함)
         if cached and cached_for == user_input:
             sentences = cached.get("sentences", [])
             if not sentences:
@@ -1048,8 +1109,6 @@ with tab_a:
             else:
                 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
                 st.markdown("### 📖 분석 결과 (" + str(len(sentences)) + "개 문장)")
-
-                # 성분 범례
                 legend = (
                     "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af'>"
                     "<span class='tag-chip tag-S'>S 주어</span> "
@@ -1061,7 +1120,6 @@ with tab_a:
                     "</div>"
                 )
                 st.markdown(legend, unsafe_allow_html=True)
-
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
                     block = (
