@@ -719,15 +719,15 @@ with st.sidebar:
         target_id = label_to_id[new_label]
         if target_id is None:
             st.session_state.selected_passage_id = None
-            st.session_state.current_text = ""
-            st.session_state["text_area"] = ""
+            st.session_state["_pending_text"] = ""
         else:
             p = get_passage_by_id(target_id)
             if p:
                 st.session_state.selected_passage_id = target_id
-                st.session_state.current_text = p["text"]
-                st.session_state["text_area"] = p["text"]
+                st.session_state["_pending_text"] = p["text"]
         st.session_state.last_results = []
+        if "analysis_result" in st.session_state:
+            del st.session_state["analysis_result"]
         st.rerun()
 
     new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
@@ -749,10 +749,9 @@ with st.sidebar:
         if st.button("🗑️ 선택 지문 삭제"):
             delete_passage(st.session_state.selected_passage_id)
             st.session_state.selected_passage_id = None
-            st.session_state.current_text = ""
             st.session_state.last_results = []
             st.session_state.passage_select_label = "(직접 입력)"
-            st.session_state["text_area"] = ""
+            st.session_state["_pending_text"] = ""
             st.success("지문이 삭제되었습니다.")
             st.rerun()
 
@@ -774,6 +773,12 @@ if st.session_state.selected_passage_id:
 
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
+
+# 대기 중인 텍스트 변경이 있으면 위젯 생성 전에 적용
+if "_pending_text" in st.session_state:
+    st.session_state["text_area"] = st.session_state["_pending_text"]
+    st.session_state.current_text = st.session_state["_pending_text"]
+    del st.session_state["_pending_text"]
 
 user_input = st.text_area("영어 지문", height=220, placeholder="여기에 영어 지문을 붙여 넣으세요...", key="text_area")
 
@@ -1266,14 +1271,18 @@ with tab_t:
             ac1, ac2, ac3 = st.columns(3)
             with ac1:
                 if st.button("✅ 변형본을 메인 지문으로 사용", use_container_width=True):
-                    st.session_state.current_text = transformed
-                    st.session_state["text_area"] = transformed
+                    # 위젯이 이미 그려진 상태이므로 직접 수정 대신 대기 변수에 저장
+                    st.session_state["_pending_text"] = transformed
                     st.session_state.last_results = []
                     st.session_state.selected_passage_id = None
                     st.session_state.passage_select_label = "(직접 입력)"
                     if "analysis_result" in st.session_state:
                         del st.session_state["analysis_result"]
-                    st.success("변형본이 메인 지문으로 적용되었습니다. '🌀 문제 생성' 탭에서 바로 출제 가능.")
+                    # 변형 결과 카드는 지움 (이미 메인에 적용됐으니)
+                    for k in ["transformed_text", "transform_notes", "transform_intensity"]:
+                        if k in st.session_state:
+                            del st.session_state[k]
+                    st.success("변형본이 메인 지문으로 적용됩니다. '🌀 문제 생성' 탭으로 이동하세요.")
                     st.rerun()
             with ac2:
                 save_title = st.text_input("저장할 제목", placeholder="예: 원지문 (50% 변형)", key="transform_save_title", label_visibility="collapsed")
