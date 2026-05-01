@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (Ollama 지원, 직독직해 슬래시 자동 삽입)"""
+"""Word Twist - 지문·문제 누적 저장소 (자동 슬래시, 다운로드, 삭제 기능)"""
 import streamlit as st
 import json
 import os
@@ -8,10 +8,12 @@ import datetime
 import concurrent.futures
 
 import google.generativeai as genai
+
 try:
     from openai import OpenAI
 except Exception:
     OpenAI = None
+
 try:
     import anthropic
 except Exception:
@@ -25,7 +27,6 @@ try:
 except Exception:
     DOCX_AVAILABLE = False
 
-# Ollama 지원 (패키지 없으면 경고만 표시)
 OLLAMA_AVAILABLE = False
 try:
     import ollama
@@ -61,28 +62,27 @@ GRAMMAR_HINTS = {
     "to부정사_동명사": "동명사만 받는 동사에 to부정사 (enjoy to do), 그 반대.",
     "분사_분사구문": "분사구문 주어와 본문 주어 불일치, 분사구문 형태 오류.",
     "현재분사_과거분사": "능동의 V-ing vs 수동의 V-ed 혼동(boring vs bored).",
-    "형용사_부사": "동사·형용사를 수식하는데 형용사 사용(부사가 와야 하는 자리).",
+    "형용사_부사": "동사·형용사를 수식하는데 형용사 사용.",
     "비교구문": "the 비교급, the 비교급 / as 원급 as / than 동사 일치 위반.",
     "명사_대명사": "단수/복수, 대명사 선행사 일치, it/them/its 혼동.",
-    "재귀대명사": "재귀 vs 인칭 (himself vs him), 강조용법 vs 재귀용법.",
+    "재귀대명사": "재귀 vs 인칭 (himself vs him).",
     "관계대명사": "선행사 격 (who/whom/whose/which/that) 잘못된 격.",
-    "관계부사": "where/when/why/how — 선행사가 장소/시간/이유/방법인지 어긋나게.",
-    "what_which_that_whose": "선행사 유무에 따른 what vs that, whose vs of which.",
+    "관계부사": "where/when/why/how 어긋나게.",
+    "what_which_that_whose": "선행사 유무에 따른 what vs that.",
     "접속사_전치사": "because vs because of, while vs during, although vs despite.",
-    "병렬구조": "and/or/but 양쪽 형태 불일치 (V-ing & to V).",
-    "도치": "Only/Never/Hardly 등 부정어 도치 위반, So/Neither 도치.",
-    "강조구문": "It is ~ that 강조구문에서 엉뚱한 자리 강조하거나 형태 오류.",
-    "어순": "간접의문문 어순 (의문사+S+V vs 의문사+V+S) 위반.",
-    "5형식_보어": "지각·사역동사 보어 형태 (see/hear/feel/make/let + 원형/V-ing/p.p.).",
+    "병렬구조": "and/or/but 양쪽 형태 불일치.",
+    "도치": "Only/Never/Hardly 등 부정어 도치 위반.",
+    "강조구문": "It is ~ that 강조구문 형태 오류.",
+    "어순": "간접의문문 어순 위반.",
+    "5형식_보어": "지각·사역동사 보어 형태 오류.",
 }
 
-GEMINI_MODELS = ["gemini-2.0-flash", "gemini-1.5-flash-latest", "gemini-2.5-flash", "gemini-flash-latest", "gemini-pro-latest"]
+GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]
 OPENAI_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 CLAUDE_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
 DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"]
 
 
-# ==================== 지문 관리 ====================
 def now_iso():
     return datetime.datetime.now().isoformat()
 
@@ -112,11 +112,8 @@ def add_passage(title, text):
             return p["id"]
     new_id = str(uuid.uuid4())
     passages.append({
-        "id": new_id,
-        "title": title,
-        "text": text,
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
+        "id": new_id, "title": title, "text": text,
+        "created_at": now_iso(), "updated_at": now_iso(),
     })
     save_passages(passages)
     return new_id
@@ -135,7 +132,6 @@ def get_passage_by_id(passage_id):
     return None
 
 
-# ==================== 문제 저장/로드 ====================
 def load_all_questions():
     if not os.path.exists(SAVE_FILE):
         return []
@@ -238,7 +234,6 @@ def pick_grammar_category(text):
     return random.choice(pool)
 
 
-# ==================== LLM 호출 (Ollama 포함) ====================
 def call_llm(provider, model, prompt, api_keys):
     if provider == "gemini":
         genai.configure(api_key=api_keys.get("gemini", ""))
@@ -263,13 +258,12 @@ def call_llm(provider, model, prompt, api_keys):
         return r.choices[0].message.content
     if provider == "ollama":
         if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama 패키지가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
+            raise RuntimeError("Ollama 패키지 미설치. requirements.txt에 'ollama' 추가 필요.")
         response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
         return response["message"]["content"]
     raise ValueError("unknown provider: " + str(provider))
 
 
-# ==================== 프롬프트 빌더 ====================
 def build_prompt(text, prev_targets, focus_pos=None, prev_choices=None):
     avoid_part = ""
     if prev_targets:
@@ -340,10 +334,8 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
         hint = GRAMMAR_HINTS.get(focus_category, "")
         cat_block = (
             "\n[★ 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 다 ★]\n"
-            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. "
-            "다른 카테고리는 절대 정답으로 만들지 마라.\n"
+            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. 다른 카테고리는 절대 정답으로 만들지 마라.\n"
             "이 카테고리 함정 패턴 가이드: " + hint + "\n"
-            "이 함정을 자연스럽게 지문 안에 녹여서 출제하라.\n"
         )
 
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어법 문제 전문가다.
@@ -370,17 +362,17 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 (2) which is [그룹B·관계대명사]
 (3) particularly [그룹C·부사]
 (4) themselves [그룹D·재귀대명사]
-(5) to watch [그룹E·병렬구조 / 또는 to부정사]
+(5) to watch [그룹E·to부정사]
 → A, B, C, D, E 각 1개씩 골고루.
 
 [보기 단위 규칙]
-- 보기는 단어 1개가 아니라 2~5 단어 구 단위 (예: "to study", "having seen", "which is", "the more important", "themselves").
+- 보기는 단어 1개가 아니라 2~5 단어 구 단위.
 - 5개 모두 실제 어법 포인트가 되는 부분.
 - 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
 - 관사(a/an/the)는 보기 대상에서 제외.
 __CAT_BLOCK__
 [정답 변형]
-- 5개 중 정확히 1개만 어법상 틀리게 변형 (의미는 그대로, 어법만 틀리게).
+- 5개 중 정확히 1개만 어법상 틀리게 변형.
 - 나머지 4개는 어법상 완벽히 정확한 원문 그대로.
 
 [전체 흐름]
@@ -393,7 +385,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 어법 형태",
     "modified_word": "변형 후 어법상 틀린 형태",
-    "answer_pos": "정답이 속한 카테고리 정확한 이름 (예: 관계대명사, 분사_분사구문, 수일치 등)",
+    "answer_pos": "정답이 속한 카테고리 정확한 이름",
     "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
 }
 
@@ -409,40 +401,25 @@ __TEXT__
 
 
 def build_analysis_prompt(text):
-    """지문 분석 프롬프트 — 인라인 품사·문장성분 + 직독직해(슬래시 강제) + 자연 해석"""
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
-[작업 단위]
-각 문장마다 아래 4가지를 출력한다.
+각 문장마다 4가지를 출력한다.
 
-1. original: 영어 원문 그대로 (한 문장씩)
-
-2. annotated: 영어 원문에 어구 단위로 인라인 주석 추가
+1. original: 영어 원문 그대로
+2. annotated: 영어 원문에 어구 단위로 인라인 주석
    - 형식: "어구⟦성분·품사⟧ 어구⟦성분·품사⟧ ..."
-   - 문장 성분 약어 사용: S(주어), V(동사), O(목적어), C(주격보어), OC(목적격보어), M(수식어/부사구), Conj(접속사)
-   - 품사도 같이 표기: 명사구, 동사, 형용사, 부사, 전치사구, 분사구문, to부정사, 관계절, 종속절 등
-   - 예시: "Good thinkers⟦S·명사구⟧ rarely⟦M·부사⟧ limit⟦V·타동사⟧ themselves⟦O·재귀대명사⟧ to a single way⟦M·전치사구⟧ of understanding the world⟦M·전치사구·동명사⟧."
-   - 절(clause)이 들어있으면 절 단위로 묶어서 표기. 예: "when Galileo finally got around to doing some empirical studies of gravity⟦M·종속절(시간)⟧"
-
-3. literal: 직독직해 — 반드시 각 어구 사이에 슬래시(/)를 넣어 구분하라. 절대 슬래시를 생략하지 말고, 공백만으로 구분하지 마라.
-   - 형식: "단어1 / 단어2 / 단어3 ..."
-   - 올바른 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중들을"
-   - 틀린 예: "그는 특히 좋아했다 보는 것을 화려한 군중들을" (슬래시 없음)
-   - 슬래시가 없으면 출력 형식 위반으로 간주한다.
-
-4. translation: 자연스러운 한국어 해석 (의역, 한 문장)
-   - 예시: "훌륭한 사상가들은 세상을 이해하는 한 가지 방식에만 자신을 가두지 않는다."
+   - 성분 약어: S, V, O, C, OC, M, Conj
+   - 품사 같이 표기 (명사구, 동사, 부사, 전치사구 등)
+3. literal: 직독직해 — 반드시 각 어구 사이에 슬래시(/)를 넣어 구분
+   - 형식: "단어1 / 단어2 / 단어3"
+   - 슬래시 빼지 말 것!
+4. translation: 자연스러운 한국어 의역
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
   "sentences": [
-    {
-      "original": "...",
-      "annotated": "...",
-      "literal": "...",
-      "translation": "..."
-    },
+    {"original": "...", "annotated": "...", "literal": "...", "translation": "..."},
     ...
   ]
 }
@@ -479,7 +456,6 @@ def generate_one_raw(text, prev_targets, focus_pos, provider, model, api_keys, q
     return json.loads(cleaned)
 
 
-# ==================== 구글 드라이브 ====================
 def get_drive_service():
     creds = None
     if os.path.exists('token.json'):
@@ -508,20 +484,19 @@ def upload_to_drive(path):
     return f.get('id')
 
 
-# ==================== 내보내기 (Word) ====================
-def export_questions_to_docx(questions, filename="word_twist_questions.docx"):
+def export_questions_to_docx(questions):
     if not DOCX_AVAILABLE:
-        st.error("python-docx 라이브러리가 필요합니다. `pip install python-docx` 실행 후 다시 시도하세요.")
         return None
     doc = Document()
     doc.add_heading('Word Twist - 생성 문제', 0)
     for i, q in enumerate(questions, 1):
-        doc.add_heading(f'문제 {i}', level=1)
-        doc.add_paragraph(q.get("question_text", ""), style='Normal')
-        doc.add_paragraph(f'정답: {q.get("answer", "?")}번', style='Intense Quote')
-        doc.add_paragraph(f'원래 단어: {q.get("original_word", "?")} → 변형: {q.get("modified_word", "?")}')
-        doc.add_paragraph(f'카테고리: {q.get("answer_pos", "?")}')
-        doc.add_paragraph(f'해설: {q.get("explanation", "")}')
+        doc.add_heading('문제 ' + str(i), level=1)
+        qt = q.get("question_text", "").replace('<u>', '_').replace('</u>', '_')
+        doc.add_paragraph(qt)
+        doc.add_paragraph('정답: ' + str(q.get("answer", "?")) + '번')
+        doc.add_paragraph('원래 단어: ' + str(q.get("original_word", "?")) + ' → 변형: ' + str(q.get("modified_word", "?")))
+        doc.add_paragraph('카테고리: ' + str(q.get("answer_pos", "?")))
+        doc.add_paragraph('해설: ' + str(q.get("explanation", "")))
         doc.add_paragraph('---')
     buffer = BytesIO()
     doc.save(buffer)
@@ -529,9 +504,7 @@ def export_questions_to_docx(questions, filename="word_twist_questions.docx"):
     return buffer
 
 
-# ==================== 후처리: 직독직해 슬래시 강제 삽입 ====================
 def add_slashes_to_literal(text):
-    """literal 문자열에 슬래시가 없으면, 공백을 기준으로 분할하여 각 덩어리 사이에 '/ '를 삽입"""
     if not text or '/' in text:
         return text
     parts = text.split()
@@ -575,13 +548,12 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .loading-sub { color: #cbd5e1; font-size: 0.95rem; }
 .loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
 @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
-
 .sent-block { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
 .sent-num { display: inline-block; padding: 2px 10px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #ec4899); color:#fff; font-size: 0.75rem; font-weight: 700; margin-bottom: 10px; }
 .sent-original { color:#e5e7eb; font-size: 1rem; line-height:1.7; margin-bottom: 12px; font-weight: 500; }
 .sent-row { color:#cbd5e1; font-size: 0.93rem; line-height: 1.85; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06); }
 .sent-row .lbl { color: #c084fc; font-weight: 700; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-right: 8px; }
-.sent-row.literal { color: #fbcfe8; font-family: "Pretendard", sans-serif; }
+.sent-row.literal { color: #fbcfe8; }
 .sent-row.translation { color: #f5f3ff; font-size: 0.97rem; }
 .sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.0; word-spacing: 2px; }
 .tag-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; margin-left: 2px; vertical-align: 1px; letter-spacing: 0.02em; }
@@ -591,12 +563,11 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .tag-C  { background: rgba(234,179,8,0.25);  color: #fde68a; border: 1px solid rgba(234,179,8,0.4); }
 .tag-OC { background: rgba(249,115,22,0.25); color: #fdba74; border: 1px solid rgba(249,115,22,0.4); }
 .tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
+.chunk-sep { color: #ec4899; font-weight: 700; margin: 0 6px; opacity: 0.65; font-size: 0.95rem; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
 
-
-# ---------- 세션 상태 초기화 ----------
 if "current_text" not in st.session_state:
     st.session_state.current_text = ""
 if "last_results" not in st.session_state:
@@ -607,26 +578,17 @@ if "passage_select_label" not in st.session_state:
     st.session_state.passage_select_label = "(직접 입력)"
 
 
-# ==================== 사이드바 ====================
 with st.sidebar:
     st.markdown("### 🔌 모델 / API 키")
-    provider_options = ["gemini", "openai", "anthropic", "deepseek", "ollama"]
+    provider_options = ["gemini", "openai", "anthropic", "deepseek"]
+    if OLLAMA_AVAILABLE:
+        provider_options.append("ollama")
     provider_labels = {
-        "gemini": "Gemini",
-        "openai": "GPT",
-        "anthropic": "Claude",
-        "deepseek": "DeepSeek",
-        "ollama": "Ollama (로컬)" + ("" if OLLAMA_AVAILABLE else " ⚠️ 미설치")
+        "gemini": "Gemini", "openai": "GPT", "anthropic": "Claude",
+        "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"
     }
-    provider = st.radio(
-        "Provider",
-        provider_options,
-        format_func=lambda x: provider_labels[x],
-        horizontal=True
-    )
-    if provider == "ollama" and not OLLAMA_AVAILABLE:
-        st.error("❌ Ollama 패키지가 설치되지 않았습니다. 터미널에서 `pip install ollama` 실행 후 앱을 재시작하세요.")
-        st.info("💡 로컬 무료 사용: [Ollama 공식 사이트](https://ollama.com)")
+    provider = st.radio("Provider", provider_options,
+        format_func=lambda x: provider_labels[x], horizontal=True)
 
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
@@ -645,20 +607,17 @@ with st.sidebar:
         anthropic_key = st.text_input("Anthropic API Key", type="password", value=os.environ.get("ANTHROPIC_API_KEY", ""))
         st.session_state["anthropic_api_key"] = anthropic_key
     elif provider == "ollama":
-        if OLLAMA_AVAILABLE:
-            try:
-                models = ollama.list()['models']
-                model_names = [m['name'] for m in models]
-                if not model_names:
-                    st.warning("설치된 Ollama 모델이 없습니다. 터미널에서 `ollama pull llama3.2` 실행하세요.")
-                    model_names = ["llama3.2"]
-                model = st.selectbox("모델", model_names, index=0)
-            except Exception as e:
-                st.error(f"Ollama 서버 연결 실패: {e}\n터미널에서 `ollama serve` 실행 중인지 확인하세요.")
-                model = st.text_input("모델명 (직접 입력)", "llama3.2")
-        else:
-            model = st.text_input("모델명", "llama3.2", disabled=True, help="Ollama 패키지 미설치")
-        st.info("✅ Ollama 사용 시 API 키 불필요, 무제한 생성 가능")
+        try:
+            models_info = ollama.list()['models']
+            model_names = [m['name'] for m in models_info] or ["llama3.2"]
+            model = st.selectbox("모델", model_names, index=0)
+            st.info("✅ Ollama: 로컬 무료 무제한")
+        except Exception as e:
+            st.error("Ollama 서버 연결 실패. 터미널에서 `ollama serve` 실행 중인지 확인.")
+            model = "llama3.2"
+
+    if not OLLAMA_AVAILABLE:
+        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본은 사용 불가)")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -675,7 +634,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 📚 지문 보관함")
-
     passages = load_passages()
     label_to_id = {"(직접 입력)": None}
     for p in passages:
@@ -688,12 +646,7 @@ with st.sidebar:
         current_label = "(직접 입력)"
     current_idx = passage_options.index(current_label)
 
-    new_label = st.selectbox(
-        "저장된 지문 불러오기",
-        passage_options,
-        index=current_idx,
-        key="passage_selector",
-    )
+    new_label = st.selectbox("저장된 지문 불러오기", passage_options, index=current_idx, key="passage_selector")
 
     if new_label != st.session_state.passage_select_label:
         st.session_state.passage_select_label = new_label
@@ -739,33 +692,24 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### 🧹 문제 관리")
-    if st.button("🗑️ 전체 문제 초기화 (모든 지문)", use_container_width=True):
+    if st.button("🗑️ 전체 문제 초기화", use_container_width=True):
         delete_all_questions()
         st.success("모든 문제가 삭제되었습니다.")
         st.rerun()
 
 
-# ==================== 메인 영역 ====================
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기 (Ollama 지원, 자동 슬래시 처리)</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
     if cur_p:
-        st.markdown(
-            "<span class='chip chip-success'>✓ 지문 불러옴: " + cur_p["title"] + "</span>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<span class='chip chip-success'>✓ 지문 불러옴: " + cur_p["title"] + "</span>", unsafe_allow_html=True)
 
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
 
-user_input = st.text_area(
-    "영어 지문",
-    height=220,
-    placeholder="여기에 영어 지문을 붙여 넣으세요...",
-    key="text_area",
-)
+user_input = st.text_area("영어 지문", height=220, placeholder="여기에 영어 지문을 붙여 넣으세요...", key="text_area")
 
 if user_input.strip() != st.session_state.current_text.strip():
     st.session_state.current_text = user_input
@@ -779,7 +723,6 @@ if user_input.strip() != st.session_state.current_text.strip():
 tab_q, tab_a = st.tabs(["🌀 문제 생성", "📖 지문 분석"])
 
 
-# =============== TAB Q: 문제 생성 ===============
 def render_question_card(idx, r, show_delete_button=False):
     prov = str(r.get("_provider", "?")).upper()
     pos = str(r.get("answer_pos", "?"))
@@ -792,7 +735,7 @@ def render_question_card(idx, r, show_delete_button=False):
         "<span class='chip'>" + pos + "</span>"
         "<span class='chip'>정답 " + ans + "번</span>"
     )
-    col1, col2 = st.columns([0.9, 0.1])
+    col1, col2 = st.columns([0.92, 0.08])
     with col1:
         st.markdown("<div style='margin-top:1rem'><b>문제 " + str(idx) + "</b> &nbsp; " + chips + "</div>", unsafe_allow_html=True)
         st.markdown("<div class='q-card'>" + r.get("question_text", "") + "</div>", unsafe_allow_html=True)
@@ -803,8 +746,9 @@ def render_question_card(idx, r, show_delete_button=False):
             st.markdown("**해설:** " + str(r.get("explanation", "")))
     with col2:
         if show_delete_button:
-            if st.button("🗑️", key=f"del_{r.get('_id', idx)}"):
-                delete_question_by_id(r.get("_id"))
+            qid = r.get("_id", str(idx))
+            if st.button("🗑️", key="del_" + str(qid)):
+                delete_question_by_id(qid)
                 st.rerun()
 
 
@@ -830,8 +774,7 @@ def make_one(text):
     for attempt in range(4):
         try:
             result = generate_one_raw(text, prev_t, focus, provider, model, api_keys,
-                                       q_type=q_type, prev_choices=prev_c,
-                                       focus_category=grammar_cat)
+                                       q_type=q_type, prev_choices=prev_c, focus_category=grammar_cat)
         except Exception as e:
             last_err = e
             continue
@@ -1008,7 +951,7 @@ with tab_q:
         saved = questions_for_text(user_input)
         if saved:
             st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
-            col_left, col_right = st.columns([1, 1])
+            col_left, col_right = st.columns([2, 1])
             with col_left:
                 st.markdown("### 📚 이 지문 누적 문제 (" + str(len(saved)) + "개)")
             with col_right:
@@ -1016,47 +959,47 @@ with tab_q:
                     delete_questions_for_text(user_input)
                     st.success("현재 지문의 모든 문제가 삭제되었습니다.")
                     st.rerun()
-                if DOCX_AVAILABLE and saved:
+
+            d1, d2 = st.columns(2)
+            with d1:
+                if DOCX_AVAILABLE:
                     docx_buffer = export_questions_to_docx(saved)
                     if docx_buffer:
                         st.download_button(
-                            label="📄 Word로 내보내기",
+                            label="📄 Word(.docx)로 다운로드",
                             data=docx_buffer,
-                            file_name=f"word_twist_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            file_name="word_twist_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            use_container_width=True,
                         )
-                print_html = """
-                <html><head><meta charset="UTF-8"><title>Word Twist 문제</title>
-                <style>body { font-family: sans-serif; } .q { margin-bottom: 30px; } u { text-decoration: none; border-bottom: 2px solid #a855f7; }</style>
-                </head><body>
-                <h1>Word Twist 문제</h1>
-                """
+                else:
+                    st.caption("Word 다운로드: requirements.txt에 python-docx 추가 필요")
+            with d2:
+                print_html = "<html><head><meta charset='UTF-8'><title>Word Twist</title>"
+                print_html += "<style>body{font-family:sans-serif;padding:30px;}.q{margin-bottom:30px;page-break-inside:avoid;}u{text-decoration:none;border-bottom:2px solid #a855f7;}h3{color:#7c3aed;}</style>"
+                print_html += "</head><body><h1>Word Twist - 생성 문제</h1>"
                 for idx, q in enumerate(saved, 1):
-                    print_html += f"""
-                    <div class="q">
-                    <h3>문제 {idx}</h3>
-                    <p>{q.get('question_text', '')}</p>
-                    <p><strong>정답:</strong> {q.get('answer', '?')}번</p>
-                    <p><strong>원래:</strong> {q.get('original_word', '?')} → <strong>변형:</strong> {q.get('modified_word', '?')}</p>
-                    <p><strong>카테고리:</strong> {q.get('answer_pos', '?')}</p>
-                    <p><strong>해설:</strong> {q.get('explanation', '')}</p>
-                    <hr>
-                    </div>
-                    """
+                    print_html += "<div class='q'><h3>문제 " + str(idx) + "</h3>"
+                    print_html += "<p>" + q.get('question_text', '') + "</p>"
+                    print_html += "<p><strong>정답:</strong> " + str(q.get('answer', '?')) + "번</p>"
+                    print_html += "<p><strong>원래:</strong> " + str(q.get('original_word', '?')) + " → <strong>변형:</strong> " + str(q.get('modified_word', '?')) + "</p>"
+                    print_html += "<p><strong>카테고리:</strong> " + str(q.get('answer_pos', '?')) + "</p>"
+                    print_html += "<p><strong>해설:</strong> " + str(q.get('explanation', '')) + "</p><hr></div>"
                 print_html += "</body></html>"
                 st.download_button(
-                    label="🖨️ 인쇄용 HTML (PDF로 저장 가능)",
+                    label="🖨️ HTML 다운로드 (브라우저에서 PDF 인쇄)",
                     data=print_html,
-                    file_name=f"word_twist_print_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html",
-                    mime="text/html"
+                    file_name="word_twist_print_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".html",
+                    mime="text/html",
+                    use_container_width=True,
                 )
 
             for idx, q in enumerate(saved, start=1):
                 render_question_card(idx, q, show_delete_button=True)
 
 
-# ============= TAB A: 지문 분석 (슬래시 후처리 적용) =============
 def render_annotated_html(annotated):
+    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 삽입"""
     def repl(m):
         full = m.group(1).strip()
         parts = full.split("·", 1)
@@ -1077,8 +1020,12 @@ def render_annotated_html(annotated):
         if pos:
             chip += "·" + pos
         chip += "</span>"
-        return chip
-    return re.sub(r"⟦(.*?)⟧", repl, annotated)
+        return chip + "<span class='chunk-sep'>/</span>"
+    result = re.sub(r"⟦(.*?)⟧", repl, annotated)
+    # 마지막 슬래시는 제거 (문장 끝의 ./!/? 앞 또는 문자열 끝)
+    result = re.sub(r"<span class='chunk-sep'>/</span>(\s*[.!?])", r"\1", result)
+    result = re.sub(r"<span class='chunk-sep'>/</span>\s*$", "", result)
+    return result
 
 
 with tab_a:
@@ -1137,15 +1084,16 @@ with tab_a:
                     "<span class='tag-chip tag-C'>C 보어</span> "
                     "<span class='tag-chip tag-OC'>OC 목적격보어</span> "
                     "<span class='tag-chip tag-M'>M 수식어</span>"
+                    "<span style='margin-left:14px'><span class='chunk-sep'>/</span> 어구 구분</span>"
                     "</div>"
                 )
                 st.markdown(legend, unsafe_allow_html=True)
+
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
                     raw_literal = s.get("literal", "")
-                    literal_text = add_slashes_to_literal(raw_literal)   # ★ 슬래시 강제 적용
-                    if "/" not in raw_literal and len(raw_literal) > 5:
-                        st.caption(f"⚠️ 문장 {i} 직독직해에 원래 슬래시가 없어 자동으로 추가했습니다.")
+                    literal_text = add_slashes_to_literal(raw_literal)
+
                     block = (
                         "<div class='sent-block'>"
                         "<div class='sent-num'>문장 " + str(i) + "</div>"
@@ -1160,7 +1108,6 @@ with tab_a:
                     st.markdown(block, unsafe_allow_html=True)
 
 
-# ---------- 드라이브 백업 ----------
 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
