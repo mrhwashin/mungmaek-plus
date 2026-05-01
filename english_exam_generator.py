@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (자동 슬래시, 다운로드, 삭제 기능)"""
+"""Word Twist - 자동 슬래시 + 다운로드 + 삭제 + 지문 변형 통합본"""
 import streamlit as st
 import json
 import os
@@ -258,7 +258,7 @@ def call_llm(provider, model, prompt, api_keys):
         return r.choices[0].message.content
     if provider == "ollama":
         if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama 패키지 미설치. requirements.txt에 'ollama' 추가 필요.")
+            raise RuntimeError("Ollama 패키지 미설치")
         response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
         return response["message"]["content"]
     raise ValueError("unknown provider: " + str(provider))
@@ -334,8 +334,8 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
         hint = GRAMMAR_HINTS.get(focus_category, "")
         cat_block = (
             "\n[★ 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 다 ★]\n"
-            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. 다른 카테고리는 절대 정답으로 만들지 마라.\n"
-            "이 카테고리 함정 패턴 가이드: " + hint + "\n"
+            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다.\n"
+            "이 카테고리 함정 패턴: " + hint + "\n"
         )
 
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어법 문제 전문가다.
@@ -345,7 +345,6 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [★★ 보기 5개 그룹 강제 분배 ★★]
 5개 보기는 반드시 아래 5개 그룹에서 **각 그룹당 정확히 1개씩** 뽑아라.
-같은 그룹에서 2개 이상 뽑으면 절대 안 된다.
 
   그룹 A (동사 관련): 시제, 능동수동, 분사, 가정법, 5형식 보어, to부정사 vs 동명사
   그룹 B (관계사·접속사·전치사): 관계대명사, 관계부사, what/which/that/whose, 접속사 vs 전치사
@@ -355,19 +354,14 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [★ 절대 하지 말 것 — 나쁜 예시 ★]
 보기가 (1) used to seat, (2) who would go, (3) were held, (4) particularly liked, (5) is chatting
-→ 5개 모두 그룹 A(동사). 다양성 0. 이런 출제 절대 금지.
+→ 5개 모두 그룹 A(동사). 다양성 0. 절대 금지.
 
-[★ 이렇게 출제 — 좋은 예시 ★]
-(1) is held [그룹A·능동수동]
-(2) which is [그룹B·관계대명사]
-(3) particularly [그룹C·부사]
-(4) themselves [그룹D·재귀대명사]
-(5) to watch [그룹E·to부정사]
-→ A, B, C, D, E 각 1개씩 골고루.
+[★ 좋은 예시 ★]
+(1) is held [A·능동수동] (2) which is [B·관계대명사] (3) particularly [C·부사]
+(4) themselves [D·재귀대명사] (5) to watch [E·to부정사]
 
 [보기 단위 규칙]
-- 보기는 단어 1개가 아니라 2~5 단어 구 단위.
-- 5개 모두 실제 어법 포인트가 되는 부분.
+- 보기는 2~5 단어 구 단위.
 - 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
 - 관사(a/an/the)는 보기 대상에서 제외.
 __CAT_BLOCK__
@@ -385,7 +379,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 어법 형태",
     "modified_word": "변형 후 어법상 틀린 형태",
-    "answer_pos": "정답이 속한 카테고리 정확한 이름",
+    "answer_pos": "정답 카테고리 정확한 이름",
     "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
 }
 
@@ -401,32 +395,22 @@ __TEXT__
 
 
 def build_transform_prompt(text, intensity):
-    """지문 변형 프롬프트 — 의미 유지, 단어/구조만 변경"""
     if intensity == 30:
-        guide = (
-            "[변형 강도: 30% — 가벼운 패러프레이징]\n"
+        guide = ("[변형 강도: 30% — 가벼운 패러프레이징]\n"
             "- 전체 문장의 약 30%만 변형.\n"
-            "- 핵심 단어 일부를 동의어로 교체 (예: said → stated, very → extremely).\n"
-            "- 문장 구조는 거의 그대로 유지.\n"
-            "- 학생이 원문을 봤어도 살짝 다르게 느껴지는 정도."
-        )
+            "- 핵심 단어 일부를 동의어로 교체.\n"
+            "- 문장 구조는 거의 그대로 유지.")
     elif intensity == 50:
-        guide = (
-            "[변형 강도: 50% — 중간 변형]\n"
+        guide = ("[변형 강도: 50% — 중간 변형]\n"
             "- 전체 문장의 약 50%를 변형.\n"
-            "- 동의어 교체 + 일부 문장 구조 변경 (능동↔수동, 절↔구, 어순 변경).\n"
+            "- 동의어 교체 + 일부 문장 구조 변경 (능동↔수동, 절↔구).\n"
             "- 짧은 문장 합치기, 긴 문장 나누기 가능.\n"
-            "- 의미와 논리는 100% 동일.\n"
-            "- 학생이 원문 외웠어도 막힐 수 있는 수준."
-        )
-    else:  # 80
-        guide = (
-            "[변형 강도: 80% — 강한 재작성]\n"
+            "- 학생이 원문 외웠어도 막힐 수 있는 수준.")
+    else:
+        guide = ("[변형 강도: 80% — 강한 재작성]\n"
             "- 거의 모든 문장을 새로 작성.\n"
             "- 어휘·구조·표현을 대폭 변경.\n"
-            "- 다만 의미·논리·정보의 흐름은 100% 그대로.\n"
-            "- 학생 입장에서 완전히 다른 글로 보일 정도."
-        )
+            "- 의미·논리·정보 흐름은 100% 그대로.")
 
     template = """너는 한국 고등학교 영어 강사다.
 주어진 영어 지문을 학생들이 단순 암기로만 풀지 못하도록 변형한다.
@@ -436,15 +420,15 @@ __GUIDE__
 [필수 준수 규칙]
 1. 의미·논리·정보는 100% 동일하게 유지.
 2. 고유명사(인명, 지명, 날짜, 숫자, 회사명 등)는 절대 변경 금지.
-3. 단락(paragraph) 수는 원문과 동일하게.
-4. 영어 수준은 한국 고2~고3 학생용으로 유지 (어려운 표현 금지).
-5. 변형 후에도 자연스러운 학술/설명문 영어 톤 유지.
-6. 정보를 추가하거나 빼지 마라 (오직 표현 방식만 변경).
+3. 단락 수는 원문과 동일하게.
+4. 영어 수준은 한국 고2~고3 학생용으로 유지.
+5. 자연스러운 학술/설명문 영어 톤 유지.
+6. 정보를 추가하거나 빼지 마라.
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
-    "transformed": "변형된 영어 지문 전문 (단락 구분 포함)",
-    "notes": "주요 변경점을 한국어 2~3문장으로 요약 (어떤 단어/구조가 바뀌었는지)"
+    "transformed": "변형된 영어 지문 전문",
+    "notes": "주요 변경점을 한국어 2~3문장으로 요약"
 }
 
 원문:
@@ -476,10 +460,8 @@ def build_analysis_prompt(text):
 2. annotated: 영어 원문에 어구 단위로 인라인 주석
    - 형식: "어구⟦성분·품사⟧ 어구⟦성분·품사⟧ ..."
    - 성분 약어: S, V, O, C, OC, M, Conj
-   - 품사 같이 표기 (명사구, 동사, 부사, 전치사구 등)
-3. literal: 직독직해 — 반드시 각 어구 사이에 슬래시(/)를 넣어 구분
-   - 형식: "단어1 / 단어2 / 단어3"
-   - 슬래시 빼지 말 것!
+3. literal: 직독직해 — 반드시 슬래시(/)로 어구 구분
+   - 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중을"
 4. translation: 자연스러운 한국어 의역
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
@@ -649,12 +631,8 @@ with st.sidebar:
     provider_options = ["gemini", "openai", "anthropic", "deepseek"]
     if OLLAMA_AVAILABLE:
         provider_options.append("ollama")
-    provider_labels = {
-        "gemini": "Gemini", "openai": "GPT", "anthropic": "Claude",
-        "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"
-    }
-    provider = st.radio("Provider", provider_options,
-        format_func=lambda x: provider_labels[x], horizontal=True)
+    provider_labels = {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"}
+    provider = st.radio("Provider", provider_options, format_func=lambda x: provider_labels[x], horizontal=True)
 
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
@@ -679,11 +657,11 @@ with st.sidebar:
             model = st.selectbox("모델", model_names, index=0)
             st.info("✅ Ollama: 로컬 무료 무제한")
         except Exception as e:
-            st.error("Ollama 서버 연결 실패. 터미널에서 `ollama serve` 실행 중인지 확인.")
+            st.error("Ollama 서버 연결 실패. `ollama serve` 확인.")
             model = "llama3.2"
 
     if not OLLAMA_AVAILABLE:
-        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본은 사용 불가)")
+        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본 사용 불가)")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -764,7 +742,7 @@ with st.sidebar:
 
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 통합 출제기</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 통합 출제기</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -932,7 +910,6 @@ with tab_q:
             loader = st.empty()
             ok = 0
             errors = []
-
             api_keys_snapshot = {
                 "gemini": st.session_state.get("gemini_api_key", ""),
                 "openai": st.session_state.get("openai_api_key", ""),
@@ -1058,7 +1035,7 @@ with tab_q:
                     print_html += "<p><strong>해설:</strong> " + str(q.get('explanation', '')) + "</p><hr></div>"
                 print_html += "</body></html>"
                 st.download_button(
-                    label="🖨️ HTML 다운로드 (브라우저에서 PDF 인쇄)",
+                    label="🖨️ HTML 다운로드 (PDF 인쇄용)",
                     data=print_html,
                     file_name="word_twist_print_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".html",
                     mime="text/html",
@@ -1070,7 +1047,7 @@ with tab_q:
 
 
 def render_annotated_html(annotated):
-    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 삽입"""
+    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 자동 삽입"""
     def repl(m):
         full = m.group(1).strip()
         parts = full.split("·", 1)
@@ -1093,7 +1070,6 @@ def render_annotated_html(annotated):
         chip += "</span>"
         return chip + "<span class='chunk-sep'>/</span>"
     result = re.sub(r"⟦(.*?)⟧", repl, annotated)
-    # 마지막 슬래시는 제거 (문장 끝의 ./!/? 앞 또는 문자열 끝)
     result = re.sub(r"<span class='chunk-sep'>/</span>(\s*[.!?])", r"\1", result)
     result = re.sub(r"<span class='chunk-sep'>/</span>\s*$", "", result)
     return result
@@ -1179,14 +1155,12 @@ with tab_a:
                     st.markdown(block, unsafe_allow_html=True)
 
 
-# ============= TAB T: 지문 변형 =============
 with tab_t:
     if not user_input.strip():
         st.info("영어 지문을 입력하면 변형을 시작할 수 있어요.")
     else:
         st.markdown(
-            "<div class='small-dim'>학생들이 원문 암기로만 풀지 못하게 지문을 변형합니다. "
-            "의미는 100% 동일, 단어·구조만 변경.</div>",
+            "<div class='small-dim'>학생들이 원문 암기로만 풀지 못하게 지문을 변형합니다. 의미는 100% 동일, 단어·구조만 변경.</div>",
             unsafe_allow_html=True,
         )
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
@@ -1236,7 +1210,6 @@ with tab_t:
             finally:
                 loader.empty()
 
-        # 변형 결과 표시
         if st.session_state.get("transformed_text"):
             transformed = st.session_state["transformed_text"]
             notes = st.session_state.get("transform_notes", "")
@@ -1271,21 +1244,19 @@ with tab_t:
             ac1, ac2, ac3 = st.columns(3)
             with ac1:
                 if st.button("✅ 변형본을 메인 지문으로 사용", use_container_width=True):
-                    # 위젯이 이미 그려진 상태이므로 직접 수정 대신 대기 변수에 저장
                     st.session_state["_pending_text"] = transformed
                     st.session_state.last_results = []
                     st.session_state.selected_passage_id = None
                     st.session_state.passage_select_label = "(직접 입력)"
                     if "analysis_result" in st.session_state:
                         del st.session_state["analysis_result"]
-                    # 변형 결과 카드는 지움 (이미 메인에 적용됐으니)
                     for k in ["transformed_text", "transform_notes", "transform_intensity"]:
                         if k in st.session_state:
                             del st.session_state[k]
                     st.success("변형본이 메인 지문으로 적용됩니다. '🌀 문제 생성' 탭으로 이동하세요.")
                     st.rerun()
             with ac2:
-                save_title = st.text_input("저장할 제목", placeholder="예: 원지문 (50% 변형)", key="transform_save_title", label_visibility="collapsed")
+                save_title = st.text_input("저장 제목", placeholder="예: 원지문 (50% 변형)", key="transform_save_title", label_visibility="collapsed")
             with ac3:
                 if st.button("💾 변형본을 보관함에 저장", use_container_width=True):
                     title = save_title.strip() if save_title else ("변형본_" + str(intensity) + "%_" + datetime.datetime.now().strftime("%m%d_%H%M"))
