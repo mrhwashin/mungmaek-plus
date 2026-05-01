@@ -1,4 +1,4 @@
-"""Word Twist - 지문·문제 누적 저장소 (자동 슬래시, 다운로드, 삭제 기능)"""
+"""Word Twist - 자동 슬래시 + 다운로드 + 삭제 기능 통합본"""
 import streamlit as st
 import json
 import os
@@ -258,7 +258,7 @@ def call_llm(provider, model, prompt, api_keys):
         return r.choices[0].message.content
     if provider == "ollama":
         if not OLLAMA_AVAILABLE:
-            raise RuntimeError("Ollama 패키지 미설치. requirements.txt에 'ollama' 추가 필요.")
+            raise RuntimeError("Ollama 패키지 미설치")
         response = ollama.chat(model=model, messages=[{"role": "user", "content": prompt}])
         return response["message"]["content"]
     raise ValueError("unknown provider: " + str(provider))
@@ -334,8 +334,8 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
         hint = GRAMMAR_HINTS.get(focus_category, "")
         cat_block = (
             "\n[★ 이번 문제 정답 카테고리는 반드시 '" + focus_category + "' 다 ★]\n"
-            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다. 다른 카테고리는 절대 정답으로 만들지 마라.\n"
-            "이 카테고리 함정 패턴 가이드: " + hint + "\n"
+            "정답(틀린 1개)은 반드시 이 카테고리의 어법 포인트여야 한다.\n"
+            "이 카테고리 함정 패턴: " + hint + "\n"
         )
 
     template = """너는 대한민국 고등학교 상위권~수능 수준의 영어 어법 문제 전문가다.
@@ -345,7 +345,6 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [★★ 보기 5개 그룹 강제 분배 ★★]
 5개 보기는 반드시 아래 5개 그룹에서 **각 그룹당 정확히 1개씩** 뽑아라.
-같은 그룹에서 2개 이상 뽑으면 절대 안 된다.
 
   그룹 A (동사 관련): 시제, 능동수동, 분사, 가정법, 5형식 보어, to부정사 vs 동명사
   그룹 B (관계사·접속사·전치사): 관계대명사, 관계부사, what/which/that/whose, 접속사 vs 전치사
@@ -355,19 +354,14 @@ def build_grammar_prompt(text, prev_targets, prev_choices=None, focus_category=N
 
 [★ 절대 하지 말 것 — 나쁜 예시 ★]
 보기가 (1) used to seat, (2) who would go, (3) were held, (4) particularly liked, (5) is chatting
-→ 5개 모두 그룹 A(동사). 다양성 0. 이런 출제 절대 금지.
+→ 5개 모두 그룹 A(동사). 다양성 0. 절대 금지.
 
-[★ 이렇게 출제 — 좋은 예시 ★]
-(1) is held [그룹A·능동수동]
-(2) which is [그룹B·관계대명사]
-(3) particularly [그룹C·부사]
-(4) themselves [그룹D·재귀대명사]
-(5) to watch [그룹E·to부정사]
-→ A, B, C, D, E 각 1개씩 골고루.
+[★ 좋은 예시 ★]
+(1) is held [A·능동수동] (2) which is [B·관계대명사] (3) particularly [C·부사]
+(4) themselves [D·재귀대명사] (5) to watch [E·to부정사]
 
 [보기 단위 규칙]
-- 보기는 단어 1개가 아니라 2~5 단어 구 단위.
-- 5개 모두 실제 어법 포인트가 되는 부분.
+- 보기는 2~5 단어 구 단위.
 - 보기에 (1)~(5) 번호 + HTML <u>해당 부분</u> 태그.
 - 관사(a/an/the)는 보기 대상에서 제외.
 __CAT_BLOCK__
@@ -385,7 +379,7 @@ __AVOID__
     "answer": 1,
     "original_word": "변형 전 원래 어법 형태",
     "modified_word": "변형 후 어법상 틀린 형태",
-    "answer_pos": "정답이 속한 카테고리 정확한 이름",
+    "answer_pos": "정답 카테고리 정확한 이름",
     "explanation": "왜 어법상 틀린지, 어떻게 고쳐야 하는지 한국어 2~3문장"
 }
 
@@ -412,8 +406,7 @@ def build_analysis_prompt(text):
    - 성분 약어: S, V, O, C, OC, M, Conj
    - 품사 같이 표기 (명사구, 동사, 부사, 전치사구 등)
 3. literal: 직독직해 — 반드시 각 어구 사이에 슬래시(/)를 넣어 구분
-   - 형식: "단어1 / 단어2 / 단어3"
-   - 슬래시 빼지 말 것!
+   - 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중을"
 4. translation: 자연스러운 한국어 의역
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
@@ -583,12 +576,8 @@ with st.sidebar:
     provider_options = ["gemini", "openai", "anthropic", "deepseek"]
     if OLLAMA_AVAILABLE:
         provider_options.append("ollama")
-    provider_labels = {
-        "gemini": "Gemini", "openai": "GPT", "anthropic": "Claude",
-        "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"
-    }
-    provider = st.radio("Provider", provider_options,
-        format_func=lambda x: provider_labels[x], horizontal=True)
+    provider_labels = {"gemini": "Gemini", "openai": "GPT", "anthropic": "Claude", "deepseek": "DeepSeek", "ollama": "Ollama (로컬)"}
+    provider = st.radio("Provider", provider_options, format_func=lambda x: provider_labels[x], horizontal=True)
 
     if provider == "gemini":
         model = st.selectbox("모델", GEMINI_MODELS, index=0)
@@ -613,11 +602,11 @@ with st.sidebar:
             model = st.selectbox("모델", model_names, index=0)
             st.info("✅ Ollama: 로컬 무료 무제한")
         except Exception as e:
-            st.error("Ollama 서버 연결 실패. 터미널에서 `ollama serve` 실행 중인지 확인.")
+            st.error("Ollama 서버 연결 실패. `ollama serve` 확인.")
             model = "llama3.2"
 
     if not OLLAMA_AVAILABLE:
-        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본은 사용 불가)")
+        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본 사용 불가)")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -662,6 +651,8 @@ with st.sidebar:
                 st.session_state.current_text = p["text"]
                 st.session_state["text_area"] = p["text"]
         st.session_state.last_results = []
+        if "analysis_result" in st.session_state:
+            del st.session_state["analysis_result"]
         st.rerun()
 
     new_title = st.text_input("새 지문 제목", placeholder="예: 2025 수능특강 3강")
@@ -861,7 +852,6 @@ with tab_q:
             loader = st.empty()
             ok = 0
             errors = []
-
             api_keys_snapshot = {
                 "gemini": st.session_state.get("gemini_api_key", ""),
                 "openai": st.session_state.get("openai_api_key", ""),
@@ -987,7 +977,7 @@ with tab_q:
                     print_html += "<p><strong>해설:</strong> " + str(q.get('explanation', '')) + "</p><hr></div>"
                 print_html += "</body></html>"
                 st.download_button(
-                    label="🖨️ HTML 다운로드 (브라우저에서 PDF 인쇄)",
+                    label="🖨️ HTML 다운로드 (PDF 인쇄용)",
                     data=print_html,
                     file_name="word_twist_print_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".html",
                     mime="text/html",
@@ -999,7 +989,7 @@ with tab_q:
 
 
 def render_annotated_html(annotated):
-    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 삽입"""
+    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 자동 삽입"""
     def repl(m):
         full = m.group(1).strip()
         parts = full.split("·", 1)
@@ -1022,7 +1012,7 @@ def render_annotated_html(annotated):
         chip += "</span>"
         return chip + "<span class='chunk-sep'>/</span>"
     result = re.sub(r"⟦(.*?)⟧", repl, annotated)
-    # 마지막 슬래시는 제거 (문장 끝의 ./!/? 앞 또는 문자열 끝)
+    # 마지막 슬래시 제거 (문장 끝의 . ! ? 앞 또는 문자열 끝)
     result = re.sub(r"<span class='chunk-sep'>/</span>(\s*[.!?])", r"\1", result)
     result = re.sub(r"<span class='chunk-sep'>/</span>\s*$", "", result)
     return result
