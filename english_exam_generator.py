@@ -1,4 +1,4 @@
-"""Word Twist - 인라인 뜻 + 슬래시 + 변형 통합본"""
+"""Word Twist - 인라인 뜻 + 핵심 어휘 + 유의어 + 슬래시 + 변형 통합본"""
 import streamlit as st
 import json
 import os
@@ -404,7 +404,6 @@ def build_transform_prompt(text, intensity):
         guide = ("[변형 강도: 50% — 중간 변형]\n"
             "- 전체 문장의 약 50%를 변형.\n"
             "- 동의어 교체 + 일부 문장 구조 변경 (능동↔수동, 절↔구).\n"
-            "- 짧은 문장 합치기, 긴 문장 나누기 가능.\n"
             "- 학생이 원문 외웠어도 막힐 수 있는 수준.")
     else:
         guide = ("[변형 강도: 80% — 강한 재작성]\n"
@@ -454,7 +453,7 @@ def build_analysis_prompt(text):
     return """너는 한국 고등학생을 가르치는 영어 강사다.
 다음 영어 지문을 문장 단위로 정밀 분석해라.
 
-각 문장마다 4가지를 출력한다.
+각 문장마다 5가지를 출력한다.
 
 1. original: 영어 원문 그대로
 2. annotated: 영어 원문에 어구 단위로 인라인 주석
@@ -464,15 +463,27 @@ def build_analysis_prompt(text):
    - 뜻: 그 어구의 한국어 의미 (짧고 명확하게)
    - 반드시 ·(가운뎃점) 으로 3부분 구분: 성분·품사·뜻
    - 예시:
-     "By adopting⟦M·전치사구·~을 가짐으로써⟧ a growth mindset⟦O·명사구·성장 마인드셋⟧ he⟦S·대명사·그는⟧ ventured into⟦V·동사·~에 뛰어들었다⟧ new experiences⟦O·명사구·새로운 경험⟧"
+     "By adopting⟦M·전치사구·~을 가짐으로써⟧ a growth mindset⟦O·명사구·성장 마인드셋⟧ he⟦S·대명사·그는⟧ ventured into⟦V·동사·~에 뛰어들었다⟧"
 3. literal: 직독직해 — 반드시 슬래시(/)로 어구 구분
-   - 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중을"
 4. translation: 자연스러운 한국어 의역
+5. vocab: 그 문장에서 학생이 알아야 할 핵심 어휘/숙어 3~5개의 배열
+   - 각 항목: {"word": "원문 표현", "meaning": "한국어 뜻", "synonyms": ["유의어1", "유의어2", "유의어3"]}
+   - 중요/어려운/시험 출제 가능성 있는 단어 위주 (관사·일상 단어 제외)
+   - 유의어는 같은 영어 수준의 동의어 2~4개
+   - 예시: [{"word":"perceive","meaning":"인식하다","synonyms":["recognize","notice","detect"]},{"word":"mere","meaning":"단순한","synonyms":["simple","plain","just"]}]
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
   "sentences": [
-    {"original": "...", "annotated": "...", "literal": "...", "translation": "..."},
+    {
+      "original": "...",
+      "annotated": "...",
+      "literal": "...",
+      "translation": "...",
+      "vocab": [
+        {"word": "...", "meaning": "...", "synonyms": ["...", "..."]}
+      ]
+    },
     ...
   ]
 }
@@ -618,6 +629,13 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
 .chunk-sep { color: #ec4899; font-weight: 700; margin: 0 6px; opacity: 0.65; font-size: 0.95rem; }
 .gloss { display: inline-block; margin-left: 4px; padding: 0 5px; font-size: 0.72rem; color: #fde68a; background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.2); border-radius: 5px; vertical-align: 1px; font-weight: 500; }
+.vocab-row { margin-top: 12px; padding-top: 10px; border-top: 1px dashed rgba(255,255,255,0.08); }
+.vocab-lbl { color: #6ee7b7; font-weight: 700; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-right: 8px; }
+.vocab-item { display: inline-flex; align-items: baseline; flex-wrap: wrap; gap: 4px; margin-right: 14px; margin-bottom: 6px; padding: 4px 10px; background: rgba(110,231,183,0.06); border: 1px solid rgba(110,231,183,0.18); border-radius: 8px; font-size: 0.85rem; }
+.vocab-word { color: #6ee7b7; font-weight: 700; }
+.vocab-meaning { color: #d1fae5; }
+.vocab-syn { color: #94a3b8; font-size: 0.78rem; font-style: italic; }
+.vocab-syn::before { content: "≈ "; color: #6ee7b7; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -748,7 +766,7 @@ with st.sidebar:
 
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 + 인라인 분석</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 + 인라인 분석 + 어휘 사전</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -1052,7 +1070,6 @@ with tab_q:
 
 
 def render_annotated_html(annotated):
-    """⟦성분·품사·뜻⟧ 패턴을 컬러 칩 + 한국어 뜻으로 변환하고 어구 사이에 슬래시 자동 삽입"""
     def repl(m):
         full = m.group(1).strip()
         parts = full.split("·", 2)
@@ -1108,9 +1125,9 @@ with tab_a:
                 "<div class='spinner'></div>"
                 "<div class='loading-title'>지문을 분석 중이에요</div>"
                 "<div class='loading-sub'>" + provider.upper()
-                + " · 인라인 뜻 + 직독직해 + 품사 분석"
+                + " · 인라인 뜻 + 직독직해 + 핵심 어휘 + 유의어"
                 + " <span class='loading-dots'></span></div>"
-                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 20~50초 소요</div>"
+                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 25~60초 소요</div>"
                 "</div></div>",
                 unsafe_allow_html=True,
             )
@@ -1133,15 +1150,16 @@ with tab_a:
                 st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
                 st.markdown("### 📖 분석 결과 (" + str(len(sentences)) + "개 문장)")
                 legend = (
-                    "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af'>"
+                    "<div style='margin-bottom:14px; font-size:0.82rem; color:#9ca3af; line-height:1.9'>"
                     "<span class='tag-chip tag-S'>S 주어</span> "
                     "<span class='tag-chip tag-V'>V 동사</span> "
                     "<span class='tag-chip tag-O'>O 목적어</span> "
                     "<span class='tag-chip tag-C'>C 보어</span> "
                     "<span class='tag-chip tag-OC'>OC 목적격보어</span> "
-                    "<span class='tag-chip tag-M'>M 수식어</span>"
-                    "<span style='margin-left:14px'><span class='gloss'>한국어 뜻</span></span>"
-                    "<span style='margin-left:8px'><span class='chunk-sep'>/</span> 어구 구분</span>"
+                    "<span class='tag-chip tag-M'>M 수식어</span> "
+                    "<span class='gloss'>한국어 뜻</span> "
+                    "<span class='chunk-sep'>/</span> 어구 구분"
+                    " · <span style='color:#6ee7b7;font-weight:700'>핵심 어휘</span> + 유의어"
                     "</div>"
                 )
                 st.markdown(legend, unsafe_allow_html=True)
@@ -1150,6 +1168,33 @@ with tab_a:
                     annotated_html = render_annotated_html(s.get("annotated", ""))
                     raw_literal = s.get("literal", "")
                     literal_text = add_slashes_to_literal(raw_literal)
+
+                    vocab_html = ""
+                    vocab_list = s.get("vocab", []) or []
+                    if vocab_list:
+                        items_html = ""
+                        for v in vocab_list:
+                            w = str(v.get("word", "")).strip()
+                            mn = str(v.get("meaning", "")).strip()
+                            syns = v.get("synonyms", []) or []
+                            syn_str = ", ".join([str(x).strip() for x in syns if str(x).strip()])
+                            if not w:
+                                continue
+                            item = "<span class='vocab-item'>"
+                            item += "<span class='vocab-word'>" + w + "</span>"
+                            if mn:
+                                item += "<span class='vocab-meaning'>(" + mn + ")</span>"
+                            if syn_str:
+                                item += "<span class='vocab-syn'>" + syn_str + "</span>"
+                            item += "</span>"
+                            items_html += item
+                        if items_html:
+                            vocab_html = (
+                                "<div class='vocab-row'>"
+                                "<span class='vocab-lbl'>핵심 어휘</span>"
+                                + items_html
+                                + "</div>"
+                            )
 
                     block = (
                         "<div class='sent-block'>"
@@ -1160,7 +1205,8 @@ with tab_a:
                         + literal_text + "</div>"
                         "<div class='sent-row translation'><span class='lbl'>해석</span>"
                         + s.get("translation", "") + "</div>"
-                        "</div>"
+                        + vocab_html
+                        + "</div>"
                     )
                     st.markdown(block, unsafe_allow_html=True)
 
