@@ -1,4 +1,4 @@
-"""Word Twist - 자동 슬래시 + 다운로드 + 삭제 + 지문 변형 통합본"""
+"""Word Twist - 인라인 뜻 + 슬래시 + 변형 통합본"""
 import streamlit as st
 import json
 import os
@@ -458,8 +458,13 @@ def build_analysis_prompt(text):
 
 1. original: 영어 원문 그대로
 2. annotated: 영어 원문에 어구 단위로 인라인 주석
-   - 형식: "어구⟦성분·품사⟧ 어구⟦성분·품사⟧ ..."
+   - 형식: "어구⟦성분·품사·뜻⟧ 어구⟦성분·품사·뜻⟧ ..."
    - 성분 약어: S, V, O, C, OC, M, Conj
+   - 품사: 명사구, 동사, 부사, 전치사구, 분사구문, 종속절 등
+   - 뜻: 그 어구의 한국어 의미 (짧고 명확하게)
+   - 반드시 ·(가운뎃점) 으로 3부분 구분: 성분·품사·뜻
+   - 예시:
+     "By adopting⟦M·전치사구·~을 가짐으로써⟧ a growth mindset⟦O·명사구·성장 마인드셋⟧ he⟦S·대명사·그는⟧ ventured into⟦V·동사·~에 뛰어들었다⟧ new experiences⟦O·명사구·새로운 경험⟧"
 3. literal: 직독직해 — 반드시 슬래시(/)로 어구 구분
    - 예: "그는 / 특히 / 좋아했다 / 보는 것을 / 화려한 군중을"
 4. translation: 자연스러운 한국어 의역
@@ -603,7 +608,7 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .sent-row .lbl { color: #c084fc; font-weight: 700; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; margin-right: 8px; }
 .sent-row.literal { color: #fbcfe8; }
 .sent-row.translation { color: #f5f3ff; font-size: 0.97rem; }
-.sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.0; word-spacing: 2px; }
+.sent-annotated { color:#fff; font-size: 0.97rem; line-height: 2.2; word-spacing: 2px; }
 .tag-chip { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.7rem; font-weight: 700; margin-left: 2px; vertical-align: 1px; letter-spacing: 0.02em; }
 .tag-S  { background: rgba(59,130,246,0.25); color: #93c5fd; border: 1px solid rgba(59,130,246,0.4); }
 .tag-V  { background: rgba(236,72,153,0.25); color: #f9a8d4; border: 1px solid rgba(236,72,153,0.4); }
@@ -612,6 +617,7 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .tag-OC { background: rgba(249,115,22,0.25); color: #fdba74; border: 1px solid rgba(249,115,22,0.4); }
 .tag-M  { background: rgba(148,163,184,0.18); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.3); }
 .chunk-sep { color: #ec4899; font-weight: 700; margin: 0 6px; opacity: 0.65; font-size: 0.95rem; }
+.gloss { display: inline-block; margin-left: 4px; padding: 0 5px; font-size: 0.72rem; color: #fde68a; background: rgba(234,179,8,0.08); border: 1px solid rgba(234,179,8,0.2); border-radius: 5px; vertical-align: 1px; font-weight: 500; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -742,7 +748,7 @@ with st.sidebar:
 
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 통합 출제기</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 + 인라인 분석</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -752,7 +758,6 @@ if st.session_state.selected_passage_id:
 if "text_area" not in st.session_state:
     st.session_state["text_area"] = st.session_state.current_text
 
-# 대기 중인 텍스트 변경이 있으면 위젯 생성 전에 적용
 if "_pending_text" in st.session_state:
     st.session_state["text_area"] = st.session_state["_pending_text"]
     st.session_state.current_text = st.session_state["_pending_text"]
@@ -1047,12 +1052,13 @@ with tab_q:
 
 
 def render_annotated_html(annotated):
-    """⟦성분·품사⟧ 패턴을 컬러 칩으로 변환하고 어구 사이에 슬래시 자동 삽입"""
+    """⟦성분·품사·뜻⟧ 패턴을 컬러 칩 + 한국어 뜻으로 변환하고 어구 사이에 슬래시 자동 삽입"""
     def repl(m):
         full = m.group(1).strip()
-        parts = full.split("·", 1)
-        comp = parts[0].strip()
+        parts = full.split("·", 2)
+        comp = parts[0].strip() if len(parts) > 0 else ""
         pos = parts[1].strip() if len(parts) > 1 else ""
+        gloss = parts[2].strip() if len(parts) > 2 else ""
         comp_cls = "tag-M"
         if comp == "S":
             comp_cls = "tag-S"
@@ -1068,7 +1074,10 @@ def render_annotated_html(annotated):
         if pos:
             chip += "·" + pos
         chip += "</span>"
-        return chip + "<span class='chunk-sep'>/</span>"
+        gloss_html = ""
+        if gloss:
+            gloss_html = "<span class='gloss'>" + gloss + "</span>"
+        return chip + gloss_html + "<span class='chunk-sep'>/</span>"
     result = re.sub(r"⟦(.*?)⟧", repl, annotated)
     result = re.sub(r"<span class='chunk-sep'>/</span>(\s*[.!?])", r"\1", result)
     result = re.sub(r"<span class='chunk-sep'>/</span>\s*$", "", result)
@@ -1099,9 +1108,9 @@ with tab_a:
                 "<div class='spinner'></div>"
                 "<div class='loading-title'>지문을 분석 중이에요</div>"
                 "<div class='loading-sub'>" + provider.upper()
-                + " · 문장 단위 직독직해 + 품사 분석"
+                + " · 인라인 뜻 + 직독직해 + 품사 분석"
                 + " <span class='loading-dots'></span></div>"
-                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 15~40초 소요</div>"
+                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 20~50초 소요</div>"
                 "</div></div>",
                 unsafe_allow_html=True,
             )
@@ -1131,7 +1140,8 @@ with tab_a:
                     "<span class='tag-chip tag-C'>C 보어</span> "
                     "<span class='tag-chip tag-OC'>OC 목적격보어</span> "
                     "<span class='tag-chip tag-M'>M 수식어</span>"
-                    "<span style='margin-left:14px'><span class='chunk-sep'>/</span> 어구 구분</span>"
+                    "<span style='margin-left:14px'><span class='gloss'>한국어 뜻</span></span>"
+                    "<span style='margin-left:8px'><span class='chunk-sep'>/</span> 어구 구분</span>"
                     "</div>"
                 )
                 st.markdown(legend, unsafe_allow_html=True)
