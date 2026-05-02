@@ -1,4 +1,4 @@
-"""Word Twist - 인라인 뜻 + 핵심 어휘 + 유의어 + 슬래시 + 변형 통합본"""
+"""Word Twist - 분석 저장/다운로드 + 인라인 뜻 + 어휘 + 변형 통합본"""
 import streamlit as st
 import json
 import os
@@ -42,6 +42,7 @@ from googleapiclient.http import MediaFileUpload
 
 SAVE_FILE = "saved_questions.json"
 PASSAGE_FILE = "passages.json"
+ANALYSIS_FILE = "analyses.json"
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
 POS_ROTATION = ["verb", "adjective", "adverb", "conjunction"]
@@ -129,6 +130,49 @@ def get_passage_by_id(passage_id):
     for p in load_passages():
         if p["id"] == passage_id:
             return p
+    return None
+
+
+# ==================== 분석 저장/로드 ====================
+def load_analyses():
+    if not os.path.exists(ANALYSIS_FILE):
+        return []
+    try:
+        with open(ANALYSIS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def save_analyses(items):
+    with open(ANALYSIS_FILE, "w", encoding="utf-8") as f:
+        json.dump(items, f, ensure_ascii=False, indent=4)
+
+
+def add_analysis(title, text, sentences):
+    items = load_analyses()
+    new_id = str(uuid.uuid4())
+    items.append({
+        "id": new_id,
+        "title": title,
+        "original_text": text,
+        "sentences": sentences,
+        "created_at": now_iso(),
+    })
+    save_analyses(items)
+    return new_id
+
+
+def delete_analysis(aid):
+    items = load_analyses()
+    items = [a for a in items if a["id"] != aid]
+    save_analyses(items)
+
+
+def get_analysis_by_id(aid):
+    for a in load_analyses():
+        if a["id"] == aid:
+            return a
     return None
 
 
@@ -396,20 +440,11 @@ __TEXT__
 
 def build_transform_prompt(text, intensity):
     if intensity == 30:
-        guide = ("[변형 강도: 30% — 가벼운 패러프레이징]\n"
-            "- 전체 문장의 약 30%만 변형.\n"
-            "- 핵심 단어 일부를 동의어로 교체.\n"
-            "- 문장 구조는 거의 그대로 유지.")
+        guide = ("[변형 강도: 30% — 가벼운 패러프레이징]\n- 전체 문장의 약 30%만 변형.\n- 핵심 단어 일부를 동의어로 교체.\n- 문장 구조는 거의 그대로 유지.")
     elif intensity == 50:
-        guide = ("[변형 강도: 50% — 중간 변형]\n"
-            "- 전체 문장의 약 50%를 변형.\n"
-            "- 동의어 교체 + 일부 문장 구조 변경 (능동↔수동, 절↔구).\n"
-            "- 학생이 원문 외웠어도 막힐 수 있는 수준.")
+        guide = ("[변형 강도: 50% — 중간 변형]\n- 전체 문장의 약 50%를 변형.\n- 동의어 교체 + 일부 문장 구조 변경.\n- 학생이 원문 외웠어도 막힐 수 있는 수준.")
     else:
-        guide = ("[변형 강도: 80% — 강한 재작성]\n"
-            "- 거의 모든 문장을 새로 작성.\n"
-            "- 어휘·구조·표현을 대폭 변경.\n"
-            "- 의미·논리·정보 흐름은 100% 그대로.")
+        guide = ("[변형 강도: 80% — 강한 재작성]\n- 거의 모든 문장을 새로 작성.\n- 어휘·구조·표현을 대폭 변경.\n- 의미·논리는 100% 그대로.")
 
     template = """너는 한국 고등학교 영어 강사다.
 주어진 영어 지문을 학생들이 단순 암기로만 풀지 못하도록 변형한다.
@@ -418,11 +453,10 @@ __GUIDE__
 
 [필수 준수 규칙]
 1. 의미·논리·정보는 100% 동일하게 유지.
-2. 고유명사(인명, 지명, 날짜, 숫자, 회사명 등)는 절대 변경 금지.
+2. 고유명사는 절대 변경 금지.
 3. 단락 수는 원문과 동일하게.
 4. 영어 수준은 한국 고2~고3 학생용으로 유지.
-5. 자연스러운 학술/설명문 영어 톤 유지.
-6. 정보를 추가하거나 빼지 마라.
+5. 정보를 추가하거나 빼지 마라.
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
@@ -462,15 +496,11 @@ def build_analysis_prompt(text):
    - 품사: 명사구, 동사, 부사, 전치사구, 분사구문, 종속절 등
    - 뜻: 그 어구의 한국어 의미 (짧고 명확하게)
    - 반드시 ·(가운뎃점) 으로 3부분 구분: 성분·품사·뜻
-   - 예시:
-     "By adopting⟦M·전치사구·~을 가짐으로써⟧ a growth mindset⟦O·명사구·성장 마인드셋⟧ he⟦S·대명사·그는⟧ ventured into⟦V·동사·~에 뛰어들었다⟧"
 3. literal: 직독직해 — 반드시 슬래시(/)로 어구 구분
 4. translation: 자연스러운 한국어 의역
 5. vocab: 그 문장에서 학생이 알아야 할 핵심 어휘/숙어 3~5개의 배열
    - 각 항목: {"word": "원문 표현", "meaning": "한국어 뜻", "synonyms": ["유의어1", "유의어2", "유의어3"]}
-   - 중요/어려운/시험 출제 가능성 있는 단어 위주 (관사·일상 단어 제외)
-   - 유의어는 같은 영어 수준의 동의어 2~4개
-   - 예시: [{"word":"perceive","meaning":"인식하다","synonyms":["recognize","notice","detect"]},{"word":"mere","meaning":"단순한","synonyms":["simple","plain","just"]}]
+   - 중요/어려운 단어 위주, 유의어는 같은 영어 수준 2~4개
 
 [출력] 마크다운 코드블록 없이 순수 JSON만:
 {
@@ -480,9 +510,7 @@ def build_analysis_prompt(text):
       "annotated": "...",
       "literal": "...",
       "translation": "...",
-      "vocab": [
-        {"word": "...", "meaning": "...", "synonyms": ["...", "..."]}
-      ]
+      "vocab": [{"word": "...", "meaning": "...", "synonyms": ["...", "..."]}]
     },
     ...
   ]
@@ -558,7 +586,7 @@ def export_questions_to_docx(questions):
         qt = q.get("question_text", "").replace('<u>', '_').replace('</u>', '_')
         doc.add_paragraph(qt)
         doc.add_paragraph('정답: ' + str(q.get("answer", "?")) + '번')
-        doc.add_paragraph('원래 단어: ' + str(q.get("original_word", "?")) + ' → 변형: ' + str(q.get("modified_word", "?")))
+        doc.add_paragraph('원래: ' + str(q.get("original_word", "?")) + ' → 변형: ' + str(q.get("modified_word", "?")))
         doc.add_paragraph('카테고리: ' + str(q.get("answer_pos", "?")))
         doc.add_paragraph('해설: ' + str(q.get("explanation", "")))
         doc.add_paragraph('---')
@@ -575,6 +603,102 @@ def add_slashes_to_literal(text):
     if len(parts) <= 1:
         return text
     return ' / '.join(parts)
+
+
+def annotated_to_plaintext(annotated):
+    """⟦성분·품사·뜻⟧ 패턴을 읽기 쉬운 플레인 텍스트로 변환"""
+    def repl(m):
+        full = m.group(1).strip()
+        return " [" + full + "] / "
+    result = re.sub(r"⟦(.*?)⟧", repl, annotated)
+    result = re.sub(r"/\s*([.!?])", r"\1", result)
+    result = re.sub(r"/\s*$", "", result)
+    return result.strip()
+
+
+def export_analysis_to_docx(title, original_text, sentences):
+    if not DOCX_AVAILABLE:
+        return None
+    doc = Document()
+    doc.add_heading('Word Twist - 지문 분석', 0)
+    doc.add_heading(title, level=1)
+    doc.add_paragraph("📄 원문")
+    doc.add_paragraph(original_text)
+    doc.add_paragraph('---')
+
+    for i, s in enumerate(sentences, start=1):
+        doc.add_heading('문장 ' + str(i), level=2)
+        doc.add_paragraph('원문: ' + s.get("original", ""))
+        doc.add_paragraph('분석: ' + annotated_to_plaintext(s.get("annotated", "")))
+        doc.add_paragraph('직독직해: ' + add_slashes_to_literal(s.get("literal", "")))
+        doc.add_paragraph('해석: ' + s.get("translation", ""))
+        vocab = s.get("vocab", []) or []
+        if vocab:
+            doc.add_paragraph('핵심 어휘:')
+            for v in vocab:
+                w = str(v.get("word", "")).strip()
+                mn = str(v.get("meaning", "")).strip()
+                syns = v.get("synonyms", []) or []
+                syn_str = ", ".join([str(x).strip() for x in syns if str(x).strip()])
+                line = "  • " + w
+                if mn:
+                    line += " (" + mn + ")"
+                if syn_str:
+                    line += " ≈ " + syn_str
+                doc.add_paragraph(line)
+        doc.add_paragraph('---')
+
+    buffer = BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+
+def export_analysis_to_html(title, original_text, sentences):
+    html = "<html><head><meta charset='UTF-8'><title>" + title + " - 분석</title>"
+    html += """<style>
+    body{font-family:'Pretendard',sans-serif;padding:30px;background:#0a0e1a;color:#e5e7eb;}
+    h1{color:#c084fc;}
+    h2{color:#ec4899;border-bottom:1px solid rgba(255,255,255,0.1);padding-bottom:6px;}
+    .sent{margin-bottom:24px;page-break-inside:avoid;background:rgba(255,255,255,0.04);padding:16px;border-radius:12px;}
+    .sent .num{display:inline-block;padding:2px 10px;border-radius:999px;background:linear-gradient(90deg,#a855f7,#ec4899);color:#fff;font-weight:700;font-size:0.8rem;}
+    .row{margin:6px 0;}
+    .lbl{color:#c084fc;font-weight:700;font-size:0.85rem;margin-right:6px;}
+    .vocab{margin-top:8px;padding-top:8px;border-top:1px dashed rgba(255,255,255,0.1);}
+    .vocab-item{display:inline-block;margin:3px;padding:3px 9px;background:rgba(110,231,183,0.08);border:1px solid rgba(110,231,183,0.25);border-radius:6px;font-size:0.85rem;}
+    .vocab-word{color:#6ee7b7;font-weight:700;}
+    .vocab-syn{color:#94a3b8;font-style:italic;font-size:0.78rem;}
+    @media print{body{background:#fff;color:#000;}h1,h2{color:#000;}.sent{background:#f8f8ff;}}
+    </style></head><body>"""
+    html += "<h1>" + title + "</h1>"
+    html += "<p><b>📄 원문</b></p><p style='font-style:italic;'>" + original_text + "</p><hr>"
+    for i, s in enumerate(sentences, start=1):
+        html += "<div class='sent'>"
+        html += "<div><span class='num'>문장 " + str(i) + "</span></div>"
+        html += "<div class='row'><span class='lbl'>원문</span>" + s.get("original", "") + "</div>"
+        html += "<div class='row'><span class='lbl'>분석</span>" + annotated_to_plaintext(s.get("annotated", "")) + "</div>"
+        html += "<div class='row'><span class='lbl'>직독직해</span>" + add_slashes_to_literal(s.get("literal", "")) + "</div>"
+        html += "<div class='row'><span class='lbl'>해석</span>" + s.get("translation", "") + "</div>"
+        vocab = s.get("vocab", []) or []
+        if vocab:
+            html += "<div class='vocab'><span class='lbl'>핵심 어휘</span>"
+            for v in vocab:
+                w = str(v.get("word", "")).strip()
+                mn = str(v.get("meaning", "")).strip()
+                syns = v.get("synonyms", []) or []
+                syn_str = ", ".join([str(x).strip() for x in syns if str(x).strip()])
+                if not w:
+                    continue
+                html += "<span class='vocab-item'><span class='vocab-word'>" + w + "</span>"
+                if mn:
+                    html += " (" + mn + ")"
+                if syn_str:
+                    html += " <span class='vocab-syn'>≈ " + syn_str + "</span>"
+                html += "</span> "
+            html += "</div>"
+        html += "</div>"
+    html += "</body></html>"
+    return html
 
 
 # ==================== Streamlit UI ====================
@@ -603,14 +727,14 @@ section[data-testid="stSidebar"] { background: rgba(10,14,26,0.7); border-right:
 .metric .value { font-size: 1.5rem; font-weight: 700; margin-top: 0.2rem; }
 .divider { height: 1px; background: rgba(255,255,255,0.08); margin: 1.4rem 0; }
 .small-dim { color: #9ca3af; font-size: 0.85rem; }
-.loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 99999; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.25s ease; }
+.loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(800px 500px at 50% 50%, rgba(168,85,247,0.25), rgba(10,14,26,0.92) 70%); backdrop-filter: blur(10px); z-index: 99999; display: flex; align-items: center; justify-content: center; animation: fadeIn 0.25s ease; }
 @keyframes fadeIn { from {opacity:0} to {opacity:1} }
-.loading-box { text-align: center; padding: 38px 56px; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border: 1px solid rgba(168,85,247,0.35); box-shadow: 0 30px 80px rgba(0,0,0,0.5), 0 0 60px rgba(168,85,247,0.25); }
-.spinner { width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 24px; background: conic-gradient(from 0deg, #a855f7, #ec4899, #06b6d4, #a855f7); -webkit-mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); animation: spin 1.2s linear infinite; filter: drop-shadow(0 0 18px rgba(168,85,247,0.5)); }
+.loading-box { text-align: center; padding: 38px 56px; border-radius: 22px; background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)); border: 1px solid rgba(168,85,247,0.35); box-shadow: 0 30px 80px rgba(0,0,0,0.5); }
+.spinner { width: 84px; height: 84px; border-radius: 50%; margin: 0 auto 24px; background: conic-gradient(from 0deg, #a855f7, #ec4899, #06b6d4, #a855f7); -webkit-mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); mask: radial-gradient(circle 32px at center, transparent 98%, #000 100%); animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.loading-title { color: #fff; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; margin-bottom: 6px; background: linear-gradient(90deg, #c084fc, #ec4899); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.loading-title { color: #fff; font-size: 1.35rem; font-weight: 800; background: linear-gradient(90deg, #c084fc, #ec4899); -webkit-background-clip: text; color: transparent; margin-bottom: 6px; }
 .loading-sub { color: #cbd5e1; font-size: 0.95rem; }
-.loading-dots::after { content: ''; display: inline-block; width: 1em; text-align: left; animation: dots 1.4s steps(4, end) infinite; }
+.loading-dots::after { content: ''; display: inline-block; width: 1em; animation: dots 1.4s steps(4, end) infinite; }
 @keyframes dots { 0%{content:''} 25%{content:'.'} 50%{content:'..'} 75%{content:'...'} 100%{content:''} }
 .sent-block { background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 1.2rem 1.4rem; margin-bottom: 1rem; }
 .sent-num { display: inline-block; padding: 2px 10px; border-radius: 999px; background: linear-gradient(90deg, #a855f7, #ec4899); color:#fff; font-size: 0.75rem; font-weight: 700; margin-bottom: 10px; }
@@ -685,7 +809,7 @@ with st.sidebar:
             model = "llama3.2"
 
     if not OLLAMA_AVAILABLE:
-        st.caption("💡 Ollama는 로컬 PC에서만 가능 (Streamlit Cloud 배포본 사용 불가)")
+        st.caption("💡 Ollama는 로컬 PC에서만 가능")
 
     st.markdown("---")
     st.markdown("### 🎯 출제 옵션")
@@ -758,6 +882,26 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
+    st.markdown("### 📖 분석 보관함")
+    analyses = load_analyses()
+    if analyses:
+        for a in analyses[-10:][::-1]:
+            ac1, ac2 = st.columns([0.85, 0.15])
+            with ac1:
+                if st.button("📖 " + a["title"][:20], key="load_ana_" + a["id"], use_container_width=True):
+                    st.session_state["analysis_result"] = {"sentences": a["sentences"]}
+                    st.session_state["analysis_for_text"] = a["original_text"]
+                    st.session_state["_pending_text"] = a["original_text"]
+                    st.success("분석 불러옴: " + a["title"])
+                    st.rerun()
+            with ac2:
+                if st.button("🗑️", key="del_ana_" + a["id"]):
+                    delete_analysis(a["id"])
+                    st.rerun()
+    else:
+        st.caption("저장된 분석 결과가 없습니다.")
+
+    st.markdown("---")
     st.markdown("### 🧹 문제 관리")
     if st.button("🗑️ 전체 문제 초기화", use_container_width=True):
         delete_all_questions()
@@ -766,7 +910,7 @@ with st.sidebar:
 
 
 st.markdown("<div class='hero-title'>Word Twist</div>", unsafe_allow_html=True)
-st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 + 인라인 분석 + 어휘 사전</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero-sub'>한 지문 · 무한히 비틀기 — 어휘 + 어법 + 변형 + 분석 저장</div>", unsafe_allow_html=True)
 
 if st.session_state.selected_passage_id:
     cur_p = get_passage_by_id(st.session_state.selected_passage_id)
@@ -1043,8 +1187,6 @@ with tab_q:
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                             use_container_width=True,
                         )
-                else:
-                    st.caption("Word 다운로드: requirements.txt에 python-docx 추가 필요")
             with d2:
                 print_html = "<html><head><meta charset='UTF-8'><title>Word Twist</title>"
                 print_html += "<style>body{font-family:sans-serif;padding:30px;}.q{margin-bottom:30px;page-break-inside:avoid;}u{text-decoration:none;border-bottom:2px solid #a855f7;}h3{color:#7c3aed;}</style>"
@@ -1058,7 +1200,7 @@ with tab_q:
                     print_html += "<p><strong>해설:</strong> " + str(q.get('explanation', '')) + "</p><hr></div>"
                 print_html += "</body></html>"
                 st.download_button(
-                    label="🖨️ HTML 다운로드 (PDF 인쇄용)",
+                    label="🖨️ HTML 다운로드",
                     data=print_html,
                     file_name="word_twist_print_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".html",
                     mime="text/html",
@@ -1125,9 +1267,9 @@ with tab_a:
                 "<div class='spinner'></div>"
                 "<div class='loading-title'>지문을 분석 중이에요</div>"
                 "<div class='loading-sub'>" + provider.upper()
-                + " · 인라인 뜻 + 직독직해 + 핵심 어휘 + 유의어"
+                + " · 인라인 뜻 + 직독직해 + 핵심 어휘"
                 + " <span class='loading-dots'></span></div>"
-                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 25~60초 소요</div>"
+                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>지문 길이에 따라 25~60초</div>"
                 "</div></div>",
                 unsafe_allow_html=True,
             )
@@ -1163,6 +1305,47 @@ with tab_a:
                     "</div>"
                 )
                 st.markdown(legend, unsafe_allow_html=True)
+
+                # 저장 + 다운로드 버튼
+                st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+                ax1, ax2, ax3 = st.columns([1.5, 1, 1])
+                with ax1:
+                    save_ana_title = st.text_input(
+                        "분석 저장 제목",
+                        placeholder="예: 2025 수특 3강 분석",
+                        key="save_ana_title",
+                        label_visibility="collapsed",
+                    )
+                    if st.button("💾 분석 결과 저장", use_container_width=True, key="save_ana_btn"):
+                        title_use = save_ana_title.strip() if save_ana_title.strip() else ("분석_" + datetime.datetime.now().strftime("%m%d_%H%M"))
+                        add_analysis(title_use, user_input, sentences)
+                        st.success("'" + title_use + "' 으로 분석 보관함에 저장됨.")
+                        st.rerun()
+                with ax2:
+                    if DOCX_AVAILABLE:
+                        ana_title_docx = save_ana_title.strip() if save_ana_title.strip() else "분석"
+                        docx_buf = export_analysis_to_docx(ana_title_docx, user_input, sentences)
+                        if docx_buf:
+                            st.download_button(
+                                label="📄 Word(.docx)",
+                                data=docx_buf,
+                                file_name="analysis_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".docx",
+                                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                use_container_width=True,
+                                key="dl_ana_docx",
+                            )
+                with ax3:
+                    ana_title_html = save_ana_title.strip() if save_ana_title.strip() else "분석"
+                    html_str = export_analysis_to_html(ana_title_html, user_input, sentences)
+                    st.download_button(
+                        label="🖨️ HTML(인쇄/PDF)",
+                        data=html_str,
+                        file_name="analysis_" + datetime.datetime.now().strftime('%Y%m%d_%H%M') + ".html",
+                        mime="text/html",
+                        use_container_width=True,
+                        key="dl_ana_html",
+                    )
+                st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
 
                 for i, s in enumerate(sentences, start=1):
                     annotated_html = render_annotated_html(s.get("annotated", ""))
@@ -1216,7 +1399,7 @@ with tab_t:
         st.info("영어 지문을 입력하면 변형을 시작할 수 있어요.")
     else:
         st.markdown(
-            "<div class='small-dim'>학생들이 원문 암기로만 풀지 못하게 지문을 변형합니다. 의미는 100% 동일, 단어·구조만 변경.</div>",
+            "<div class='small-dim'>학생들이 원문 암기로만 풀지 못하게 지문을 변형합니다. 의미는 100% 동일.</div>",
             unsafe_allow_html=True,
         )
         st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
@@ -1249,10 +1432,9 @@ with tab_t:
                 "<div class='loading-overlay'><div class='loading-box'>"
                 "<div class='spinner'></div>"
                 "<div class='loading-title'>지문을 " + str(chosen_intensity) + "% 변형 중</div>"
-                "<div class='loading-sub'>" + provider.upper()
-                + " · 의미 유지 · 단어/구조 변경"
+                "<div class='loading-sub'>" + provider.upper() + " · 의미 유지"
                 + " <span class='loading-dots'></span></div>"
-                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>약 15~30초 소요</div>"
+                "<div style='margin-top:14px; color:#94a3b8; font-size:0.78rem'>약 15~30초</div>"
                 "</div></div>",
                 unsafe_allow_html=True,
             )
@@ -1309,7 +1491,7 @@ with tab_t:
                     for k in ["transformed_text", "transform_notes", "transform_intensity"]:
                         if k in st.session_state:
                             del st.session_state[k]
-                    st.success("변형본이 메인 지문으로 적용됩니다. '🌀 문제 생성' 탭으로 이동하세요.")
+                    st.success("변형본 적용. '🌀 문제 생성' 탭으로 이동.")
                     st.rerun()
             with ac2:
                 save_title = st.text_input("저장 제목", placeholder="예: 원지문 (50% 변형)", key="transform_save_title", label_visibility="collapsed")
@@ -1317,7 +1499,7 @@ with tab_t:
                 if st.button("💾 변형본을 보관함에 저장", use_container_width=True):
                     title = save_title.strip() if save_title else ("변형본_" + str(intensity) + "%_" + datetime.datetime.now().strftime("%m%d_%H%M"))
                     add_passage(title, transformed)
-                    st.success("'" + title + "' 으로 지문 보관함에 저장됨.")
+                    st.success("'" + title + "' 보관함에 저장됨.")
                     st.rerun()
 
             if st.button("🗑️ 이 변형본 결과 지우기"):
@@ -1332,10 +1514,10 @@ cdrv1, cdrv2 = st.columns([1, 3])
 with cdrv1:
     drv = st.button("☁️ 드라이브 백업")
 with cdrv2:
-    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json 및 passages.json을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='small-dim' style='padding-top:0.5rem'>saved_questions.json, passages.json, analyses.json을 구글 드라이브로 업로드합니다.</div>", unsafe_allow_html=True)
 if drv:
     found_any = False
-    for fname in [SAVE_FILE, PASSAGE_FILE]:
+    for fname in [SAVE_FILE, PASSAGE_FILE, ANALYSIS_FILE]:
         if os.path.exists(fname):
             found_any = True
             try:
